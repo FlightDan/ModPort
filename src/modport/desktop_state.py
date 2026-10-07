@@ -22,6 +22,152 @@ _published = {}
 _publish_lock = threading.Lock()
 
 
+def publish_observation_binding(header, runtime):
+    """Copy the public SDK reader binding without opening a UI-side writer."""
+    root = Path(header['run_dir']).resolve()
+    path = root / 'artifacts' / 'monitor' / 'sdk-observation-binding.json'
+    try:
+        if path.resolve() != path.absolute():
+            raise ValueError('unsafe SDK observation binding path')
+        atomic_json(path, {'run_id': header['run_id'],
+                          'storage': runtime.observation_storage})
+    except (OSError, ValueError) as error:
+        note_desktop_error(header, 'observation_binding', error)
+
+
+def _observation_binding(root, run_id):
+    value = read_json(root / 'artifacts' / 'monitor' / 'sdk-observation-binding.json', limit=8192)
+    storage = value.get('storage') or {}
+    if (value.get('run_id') != run_id
+            or storage.get('kernel_path') != str(root / 'kernel.sqlite3')
+            or storage.get('path') != str(root / 'kernel.sqlite3.observations.sqlite3')
+            or not isinstance(storage.get('source_id'), str) or not storage['source_id']):
+        raise ValueError('SDK observation binding unavailable for current Run')
+    return storage
+
+
+def _worker_process(report, *, run_id, task_id, fence, now):
+    """Observe a bound worker, never infer its liveness from SDK scheduling."""
+    unknown = {'state': 'unknown', 'reason': 'worker_not_observed', 'observed_at': now}
+    identity = report.get('identity') or {}
+    if (identity.get('run_id') != run_id or identity.get('task_id') != task_id
+            or identity.get('fence') != fence):
+        return {**unknown, 'reason': 'worker_observation_identity_unverified'}
+    worker = next((item for item in report.get('processes', [])
+                   if item.get('process_id') == 'worker'), None)
+    if not worker:
+        return {**unknown, 'reason': report.get('unknown_reason') or unknown['reason']}
+    registration = worker.get('registration') or {}
+    evidence = {'identity': registration, 'last_observed_at': worker.get('observed_at')}
+    if worker.get('state') == 'exited':
+        return {**evidence, 'state': 'exited', 'reason': 'sdk_process_exit_observed',
+                'observed_at': now}
+    # A persisted worker self-report (even a recent one) is not a live handle.
+    # Recheck birth in the recorded namespace; inaccessible processes stay unknown.
+    from .opencode_recovery import _proc_mount_matches_namespace, _read_stat
+    namespace = registration.get('namespace')
+    birth = registration.get('birth_identity') or {}
+    pid = registration.get('pid')
+    if (os.name != 'posix' or not isinstance(namespace, str)
+            or not _proc_mount_matches_namespace(namespace)):
+        return {**unknown, **evidence, 'reason': 'worker_pid_namespace_unverified'}
+    if (type(pid) is not int or pid <= 0 or not isinstance(birth, dict)
+            or birth.get('pid') != pid or birth.get('namespace') != namespace
+            or type(birth.get('start_ticks')) is not int):
+        return {**unknown, **evidence, 'reason': 'worker_birth_identity_unavailable'}
+    try:
+        current = _read_stat(pid)
+    except (OSError, ValueError):
+        return {**unknown, **evidence, 'reason': 'worker_process_inaccessible'}
+    if current is None:
+        # Confirm absence rather than treating a failed procfs read as exit.
+        from .run_monitor import process_identity_state
+        try:
+            boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+            alive = process_identity_state(pid, f"{boot}:{birth['start_ticks']}")
+        except OSError:
+            alive = None
+        if alive is not False:
+            return {**unknown, **evidence, 'reason': 'worker_process_inaccessible'}
+        state, reason = 'exited', 'worker_identity_gone'
+    elif current['start_ticks'] != birth['start_ticks']:
+        state, reason = 'exited', 'worker_birth_identity_changed'
+    elif current['state'] == 'Z':
+        state, reason = 'exited', 'worker_zombie'
+    else:
+        state, reason = 'alive', 'worker_process_identity_observed'
+    return {**evidence, 'state': state, 'reason': reason, 'observed_at': now}
+
+
+def _execution_liveness(root, header, value):
+    """Add bounded read-only process facts without changing Run lifecycle state."""
+    from .run_monitor import read_run_availability
+    now = time.time()
+    items = [item for group in value.get('stages', {}).values()
+             for item in group.get('items', [])]
+    active = []
+    for item in items:
+        item.setdefault('sdk_state', 'running' if item.get('state') == 'running' else item.get('state'))
+        item.setdefault('sdk_active_agents', item.get('active_agents', 0))
+        item['worker_process'] = {'state': 'unknown',
+            'reason': ('sdk_execution_terminal_process_cleanup_unknown'
+                       if item['sdk_state'] in TERMINAL | {'timed_out', 'dead', 'rejected'}
+                       else 'worker_not_observed'), 'observed_at': now}
+        item['active_agents'] = None if item['sdk_active_agents'] else 0
+        if item['sdk_active_agents']:
+            active.append(item)
+    value['sdk_state'] = value.get('sdk_state', value['status'])
+    if active and value['status'] not in TERMINAL:
+        try:
+            observed = read_run_availability(root, header['run_id'], sample_limit=100, effect_scan_limit=0)
+            value['sdk_state'] = observed.run_state
+            value['sdk_observed_at'] = observed.observed_at
+            summaries = {item.execution_id: item for item in observed.summaries}
+            binding = _observation_binding(root, header['run_id'])
+            from dispatcher_sdk.observability import ObservationOptions, inspect_execution
+            options = ObservationOptions(query_timeout=.1, query_bytes=32768, page_events=8,
+                                         batch_summaries=8, tail_bytes=1024)
+            until = time.monotonic() + .3
+            for item in active[:16]:
+                summary = summaries.get(item.get('execution_id'))
+                if summary is None or summary.task_id != item['id']:
+                    item['worker_process']['reason'] = 'current_sdk_execution_not_observed'
+                    continue
+                item['sdk_state'] = summary.state
+                if summary.state != 'running':
+                    item['sdk_active_agents'] = 0
+                    item['active_agents'] = 0
+                    item['worker_process']['reason'] = 'sdk_execution_not_running'
+                    continue
+                remaining = until - time.monotonic()
+                if remaining <= 0 or observed.snapshot_consistency == 'concurrent_change':
+                    item['worker_process']['reason'] = 'observation_budget_or_consistency_unknown'
+                    continue
+                report = inspect_execution(str(root / 'kernel.sqlite3') + '.observations.sqlite3',
+                    summary.execution_id, kernel_path=root / 'kernel.sqlite3',
+                    source_id=binding['source_id'], options=options, timeout=min(.1, remaining))
+                if report.get('execution_id') != summary.execution_id:
+                    item['worker_process']['reason'] = 'worker_observation_identity_unverified'
+                    continue
+                item['worker_process'] = _worker_process(report, run_id=header['run_id'],
+                    task_id=item['id'], fence=summary.fence, now=now)
+                process_state = item['worker_process']['state']
+                item['active_agents'] = 1 if process_state == 'alive' else 0 if process_state == 'exited' else None
+        except (OSError, ValueError, RuntimeError, KeyError, sqlite3.Error) as error:
+            value['execution_observation_error'] = f'{type(error).__name__}: {str(error)[:1000]}'
+    live = sum(item['active_agents'] == 1 for item in active)
+    interrupted = sum(item['worker_process']['state'] == 'exited' for item in active)
+    unknown = sum(item['active_agents'] is None for item in active)
+    value['execution_health'] = {'state': 'interrupted' if interrupted else 'unknown' if unknown else 'running' if live else 'idle',
+        'observed_live_agents': live, 'interrupted_agents': interrupted, 'unknown_agents': unknown,
+        'sdk_active_agents': sum(bool(item['sdk_active_agents']) for item in active), 'observed_at': now}
+    if interrupted:
+        return 'SDK 任务仍显示运行，但已观察到工作进程退出；实际执行已中断，行为验收仍未验证。'
+    if unknown:
+        return 'SDK 任务调度状态与进程存活状态独立；部分工作进程的当前存活状态未知。'
+    return None
+
+
 def note_desktop_error(header, phase, error, *, revision=None):
     """Retain optional UI failures without changing SDK business execution."""
     try:
@@ -248,7 +394,7 @@ class DesktopState:
                                  else observed.run_state)
                 revision, observed_at = observed.run_revision, observed.observed_at
                 notice = '当前 SDK 执行尚无任务状态投影；行为验收仍未验证。'
-            except (OSError, ValueError, RuntimeError, KeyError) as error:
+            except (OSError, ValueError, RuntimeError, KeyError, sqlite3.Error) as error:
                 current_state, revision, observed_at = 'unknown', None, 0
                 notice = '当前 SDK 执行状态未知；旧执行结果仅为历史证据。' + str(error)[:1000]
             value = {'id': instance_id, 'execution_run_id': header['run_id'], 'project_name': record['project_name'],
@@ -274,8 +420,10 @@ class DesktopState:
         # Status remains readable after a user moves/deletes a finished project.
         # Execution and the native opener validate the live directory separately.
         value['workspace'] = workspace
+        execution_notice = _execution_liveness(root, header, value)
         notice_parts = [
             {'kind': 'framework', 'text': value.get('notice')},
+            {'kind': 'framework', 'text': execution_notice},
             {'kind': 'launch_error', 'text': record.get('launch_error')},
             {'kind': 'source', 'text': metadata.get('source_identity_notice')},
         ]
@@ -367,7 +515,7 @@ def publish_snapshot(header, snapshot, *, force=False):
         error = attempt.get('error')
         detail = str(outcome.get('detail') or (json.dumps(error, ensure_ascii=False) if error else ''))[:2000]
         is_agent = bool(operation.get('options', {}).get('model')) or stage in AGENT_STAGES | {'supervisor'}
-        item = {'id': task_id, 'label': str(label)[:240], 'state': display_state, 'detail': detail, 'error_code': outcome.get('error_code'), 'active_agents': 1 if execution == 'running' and is_agent else 0, 'active_subagents': None, 'execution_id': attempt.get('command', {}).get('execution_id')}
+        item = {'id': task_id, 'label': str(label)[:240], 'state': display_state, 'sdk_state': execution, 'detail': detail, 'error_code': outcome.get('error_code'), 'sdk_active_agents': 1 if execution == 'running' and is_agent else 0, 'active_agents': None if execution == 'running' and is_agent else 0, 'active_subagents': None, 'execution_id': attempt.get('command', {}).get('execution_id'), 'worker_process': {'state': 'unknown', 'reason': 'worker_not_observed', 'observed_at': now}}
         # Translate framework stage names at the API boundary, preserving authored titles.
         item.update(stage_id=stage, label_is_stage=not bool(authored_label))
         stages[group_for_stage(stage)]['items'].append(item)
@@ -381,7 +529,7 @@ def publish_snapshot(header, snapshot, *, force=False):
         run_state = 'waiting' if any(wait.get('state') == 'open' for wait in snapshot.get('waits', {}).values()) else 'running' if tasks else 'queued'
     app = snapshot.get('application_state') or {}
     acceptance = app.get('acceptance_status', 'unverified')
-    value = {'id': instance_id, 'execution_run_id': header['run_id'], 'project_name': record['project_name'], 'status': run_state, 'elapsed_seconds': max(0, now - header['started_at']), 'budget': {'max_seconds': budget['max_seconds'], 'max_tokens': budget.get('max_tokens'), 'used_tokens': None, 'token_usage_complete': False}, 'stages': stages, 'messages': [], 'supervisor': {'busy': False}, 'notice': ('执行已完成；行为验收仍未验证。' if run_state == 'succeeded' and acceptance != 'passed' else None), 'acceptance_status': acceptance, 'observed_at': now, 'sdk_revision': snapshot.get('revision'), 'workflow_version': header['definition']['workflow_version']}
+    value = {'id': instance_id, 'execution_run_id': header['run_id'], 'project_name': record['project_name'], 'status': run_state, 'sdk_state': snapshot['state'], 'elapsed_seconds': max(0, now - header['started_at']), 'budget': {'max_seconds': budget['max_seconds'], 'max_tokens': budget.get('max_tokens'), 'used_tokens': None, 'token_usage_complete': False}, 'stages': stages, 'messages': [], 'supervisor': {'busy': False}, 'notice': ('执行已完成；行为验收仍未验证。' if run_state == 'succeeded' and acceptance != 'passed' else None), 'acceptance_status': acceptance, 'observed_at': now, 'sdk_revision': snapshot.get('revision'), 'workflow_version': header['definition']['workflow_version']}
     projection = Path(header['run_dir']) / 'desktop-status.json'
     if run_state in TERMINAL and projection.exists():
         previous = read_json(projection)

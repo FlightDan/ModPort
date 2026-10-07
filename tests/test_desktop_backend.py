@@ -79,7 +79,8 @@ class DesktopBackendTests(unittest.TestCase):
         with patch.object(operations, 'status', side_effect=AssertionError('UI must not read SDK status')):
             status = self.store.status(self.identifier)
         tasks = status['stages']['implementation']['items']
-        self.assertEqual([item['active_agents'] for item in tasks], [1, 0, 0, 0])
+        self.assertEqual([item['active_agents'] for item in tasks], [None, 0, 0, 0])
+        self.assertEqual([item['sdk_active_agents'] for item in tasks], [1, 0, 0, 0])
         self.assertTrue(all(item['active_subagents'] is None for item in tasks))
         self.assertEqual([item['state'] for item in tasks], ['running', 'queued', 'failed', 'completed'])
         self.assertEqual(tasks[2]['detail'], '')
@@ -89,6 +90,15 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertFalse((self.store.root / 'kernel.sqlite3').exists())
         with self.assertRaises(KeyError):
             self.store.run_dir('../../escape')
+
+    def test_formal_session_publishes_public_sdk_observation_binding(self):
+        operations, run, header = self.create_instance()
+        with operations.session(run.run_dir, run.run_id) as (_, current, runtime, _):
+            binding = read_json(run.run_dir / 'artifacts/monitor/sdk-observation-binding.json')
+            self.assertEqual(binding['run_id'], current['run_id'])
+            self.assertEqual(binding['storage'], runtime.observation_storage)
+            self.assertNotEqual(binding['storage']['source_id'], binding['storage']['kernel_path'])
+        self.assertEqual(header, read_json(run.run_dir / 'run.json'))
 
     def test_actual_sdk_chat_producer_handler_and_projection(self):
         operations, run, header = self.create_instance()

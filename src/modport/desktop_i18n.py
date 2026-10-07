@@ -362,6 +362,8 @@ for _field in ['model', 'reasoning_effort']:
 MESSAGES.update({
     '实例已保存；尚未收到任务状态投影，当前执行状态未知。': 'The instance was saved, but no task status projection has arrived. The current execution state is unknown.',
     '状态投影超过 30 秒未更新；这不证明进程已退出。请查看持久监督器或环境检查。': 'The status projection has not updated for over 30 seconds. This does not prove the process has exited. Check the persistent supervisor or environment.',
+    'SDK 任务仍显示运行，但已观察到工作进程退出；实际执行已中断，行为验收仍未验证。': 'The SDK task still shows running, but its worker process has exited. Execution was interrupted; behavior acceptance remains unverified.',
+    'SDK 任务调度状态与进程存活状态独立；部分工作进程的当前存活状态未知。': 'SDK scheduling state and process liveness are separate. Current liveness is unknown for some workers.',
     '执行已完成；行为验收仍未验证。': 'Execution is complete; behavior acceptance remains unverified.',
     '未识别到源码中的 mod_id 字面量。本次暂用规范化仓库名称 {mod_id}；项目显示名称独立保存，实际源码身份仍由迁移源码读取确认。': 'No literal mod_id was detected in the source. The normalized repository name {mod_id} is used temporarily; the project display name is stored separately and migration source reading will confirm the actual source identity.',
     '本地源码快照包含 {count} 个文件，已排除 {excluded} 项。': 'The local source snapshot contains {count} files; {excluded} entries were excluded.',

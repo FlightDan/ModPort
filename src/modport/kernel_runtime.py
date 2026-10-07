@@ -119,10 +119,9 @@ def operation_lock(root: Path, operation: OperationInput) -> Path:
         # author's workspace lock here would deadlock that synchronous call.
         return root / '.locks' / 'reviews' / operation.command_id
     if operation.stage_id == 'agent_rework':
-        workspace = operation.payload.get('reviewer_workspace')
-        if workspace not in {'baseline', 'worktree'}:
-            raise ValueError('coder rework requires a baseline or worktree review')
-        return root / '.locks' / 'scopes' / ('baseline-harness' if workspace == 'baseline' else 'worktree')
+        from .rework_coder import rework_workspace
+        workspace = rework_workspace(operation)
+        return root / '.locks' / 'scopes' / ('baseline-harness' if workspace == 'baseline' else workspace)
     if operation.stage_id == "goal_prepare":
         # Each read-only planner writes execution-specific logs/artifacts only.
         from hashlib import sha256
@@ -786,9 +785,8 @@ def cancel_incomplete_agent_stage(root: Path, command: dict, effect,
                 or not isinstance(reviewer_id, str) or not reviewer_id
                 or operation.task_id != f"agent-rework.{request_id}"):
             raise ValueError("interrupted coder rework lacks its reviewer request identity")
-        workspace = operation.payload.get("reviewer_workspace")
-        if not isinstance(workspace, str) or workspace not in {"baseline", "worktree"}:
-            raise ValueError("interrupted coder rework has an invalid reviewer workspace")
+        from .rework_coder import rework_workspace
+        workspace = rework_workspace(operation)
         partial = {
             "disposition": "candidate changes retained but unaccepted; no rollback is asserted",
             "reviewer_execution_id": reviewer_id,

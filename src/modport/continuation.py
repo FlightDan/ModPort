@@ -3,6 +3,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import re
+from uuid import uuid4
 
 from dispatcher_sdk.orchestrator import Orchestrator, Operations
 
@@ -109,6 +110,27 @@ def _verify_prepared_payload(root, packet):
 def _host_interface(root, segment_id):
     from .host_interface import publish_host_interface
     return publish_host_interface(root, "continuation-support:" + segment_id)
+
+
+def _upgrade_watchdog_policy(root, header):
+    """Carry the user's durable watchdog stop into the new execution segment."""
+    inherited = header.get('watchdog_policy')
+    policy = (json_copy(inherited) if isinstance(inherited, dict) else
+              {'enabled': True, 'inactivity_seconds': 600})
+    control = Path(root) / 'desktop-watchdog-control.json'
+    if not control.exists():
+        return policy, None
+    try:
+        from .desktop_state import read_json as read_desktop_json
+        value = read_desktop_json(control, limit=65536)
+        if value.get('instance') == Path(root).name and value.get('suppressed') is True:
+            policy['enabled'] = False
+        return policy, None
+    except (OSError, ValueError, TypeError, AttributeError) as error:
+        # An unreadable control is diagnostic, never permission to reenable
+        # supervision or a prerequisite for continuing the migration.
+        policy['enabled'] = False
+        return policy, str(error)
 
 
 def _v15_contract_plan_checkpoint(root, app):
@@ -787,6 +809,136 @@ def _reconsider_dependency_stop(state, app):
         hold['status'] = 'needs_plan'
 
 
+def _retained_integration_command(root, state, stage):
+    """Resolve the settled integration selected by its retained host result."""
+    from .json_catalog import iter_catalog
+    root = Path(root)
+    source_result = (state.get('application_state') or {}).get('effective', {}).get(stage)
+    if not isinstance(source_result, dict) or not isinstance(source_result.get('command_id'), str):
+        raise ValueError('requested integration has no retained execution identity')
+    execution_id = source_result['command_id']
+    original = None
+    for task in state.get('tasks', {}).values():
+        for attempt in task.get('attempts', []):
+            command = attempt.get('command', {})
+            if command.get('execution_id') != execution_id or attempt.get('state') not in _SETTLED:
+                continue
+            original = OperationInput.from_dict(unpack_input(root, command['payload']))
+    if original is None:
+        header = state.get('input') or {}
+        ref = header.get('continuation', {}).get('support_refs', {}).get('continuation:rework_sources')
+        if not isinstance(ref, dict):
+            raise ValueError('requested integration SDK command is not retained')
+        metadata = ref.get('metadata', {})
+        if (header.get('run_id') != state['run_id']
+                or metadata.get('next_run_id') != state['run_id']
+                or ref.get('path') != 'artifacts/continuations/' + state['run_id'] + '/rework-sources.json'):
+            raise ValueError('integration source catalog identifies another execution segment')
+        # Select this one host-bound descriptor. The existing storage decoder
+        # handles packed inputs; no new checksum or content identity is added.
+        for kind, name, row in iter_catalog(verified_path(root, ref)):
+            if kind != 'source' or row.get('execution_id') != execution_id:
+                continue
+            if row.get('terminal_state') not in _SETTLED or row.get('stage_id') != stage:
+                raise ValueError('requested integration catalog entry is not a settled integration')
+            candidate = OperationInput.from_dict(unpack_input(root, row['operation']))
+            if (row.get('task_id') != candidate.task_id or row.get('target_agent') != candidate.task_id
+                    or row.get('execution_id') != candidate.command_id or row.get('stage_id') != candidate.stage_id):
+                raise ValueError('requested integration catalog operation identity differs')
+            if original is not None:
+                raise ValueError('requested integration has duplicate retained execution descriptors')
+            original = candidate
+    if original is None:
+        raise ValueError('requested integration SDK command is not retained')
+    if original.stage_id != stage or original.command_id != execution_id or Path(original.run_dir) != root:
+        raise ValueError('requested integration SDK command belongs to another boundary')
+    OperationResult.from_dict(source_result).validate_for(original)
+    return original
+
+
+def _prepare_integration_replay(root, state, app, stage, *, resolution=None):
+    """Retain the exact settled integration input selected by the host history."""
+    root = Path(root)
+    original = _retained_integration_command(root, state, stage)
+    execution_id = original.command_id
+    path = root / 'artifacts' / 'continuations' / 'integration-replays' / uuid4().hex / 'command.json'
+    if path.resolve() != path.absolute():
+        raise ValueError('integration replay input must not traverse symlinks')
+    replay = original.to_dict()
+    if resolution is not None:
+        replay['payload']['integration_resolution'] = json_copy(resolution)
+    atomic_json(path, replay)
+    app['integration_replay'] = {'stage': stage, 'source_execution_id': execution_id,
+                                 'command_ref': {'path': path.relative_to(root).as_posix()}}
+    previous = app.pop('integration_repair', None)
+    if previous is not None:
+        app.setdefault('integration_repair_history', []).append(previous)
+    app.update(active_group=None, early_active=False)
+
+
+def _prepare_integration_successor(root, state, app):
+    """Rebind a retained merge only when preparing an explicit SDK successor."""
+    from .integration_repair import INTEGRATION_STAGES
+    repair = app.get('integration_repair')
+    if not isinstance(repair, dict) or not isinstance(repair.get('command_ref'), dict):
+        return False
+    root = Path(root)
+    original = OperationInput.from_dict(read_json(verified_path(root, repair['command_ref'])))
+    header = state.get('input') or {}
+    if (original.stage_id not in INTEGRATION_STAGES or Path(original.run_dir) != root
+            or original.run_id != header.get('logical_run_id', state['run_id'])):
+        raise ValueError('retained integration repair belongs to another continuation')
+    record = read_json(verified_path(root, repair['merge_ref']))
+    if (record.get('command_ref') != repair['command_ref']
+            or record.get('source_workspace') != original.options.get('workspace', 'worktree')
+            or not record.get('conflicts')):
+        raise ValueError('retained integration repair differs from its host merge binding')
+    source_result = (state.get('application_state') or {}).get('effective', {}).get(original.stage_id)
+    if not isinstance(source_result, dict):
+        raise ValueError('retained integration repair has no integration result')
+    result = OperationResult.from_dict(source_result)
+    selected = _retained_integration_command(root, state, original.stage_id)
+    if selected.command_id != original.command_id:
+        if selected.payload.get('integration_resolution', {}).get('merge_ref') != repair['merge_ref']:
+            raise ValueError('selected integration does not consume the retained merge')
+    elif (result.error_code != 'integration_merge_required'
+          or result.outputs.get('integration_merge_ref') != repair['merge_ref']):
+        raise ValueError('retained integration result does not identify its merge')
+    if repair.get('status') == 'integrating' and result.status == 'completed':
+        # A later failure must not replay an integration that already settled.
+        app.setdefault('integration_repair_history', []).append(app.pop('integration_repair'))
+        return True
+    resolution = None
+    coder_result = repair.get('coder_result')
+    execution_id = repair.get('coder_execution_id')
+    patch = repair.get('coder_patch')
+    if repair.get('status') == 'running':
+        task = state.get('tasks', {}).get(repair.get('task_id'))
+        attempts = task.get('attempts', []) if isinstance(task, dict) else []
+        if attempts and attempts[-1].get('state') == 'succeeded':
+            attempt = attempts[-1]
+            command = OperationInput.from_dict(attempt['command']['payload'])
+            settled = _attempt_outcome(attempt)
+            if (command.task_id != repair['task_id'] or command.stage_id != 'coder'
+                    or command.payload.get('development_task') != repair['plan']['tasks'][0]
+                    or command.payload.get('integration_merge_ref') != repair['merge_ref']):
+                raise ValueError('settled integration coder differs from its retained assignment')
+            coder_result = settled.to_dict()
+            execution_id = command.command_id
+            patch = settled.outputs.get('artifact_refs', {}).get('coder_patch')
+    if isinstance(coder_result, dict) and coder_result.get('status') == 'completed':
+        coder = OperationResult.from_dict(coder_result)
+        if (coder.task_id != repair['task_id'] or coder.stage_id != 'coder'
+                or coder.run_id != original.run_id or coder.command_id != execution_id
+                or coder.outputs.get('artifact_refs', {}).get('coder_patch') != patch):
+            raise ValueError('retained integration resolution differs from its coder result')
+        if isinstance(patch, dict) and verified_path(root, patch).stat().st_size:
+            resolution = {'merge_ref': repair['merge_ref'], 'coder_patch': patch,
+                          'coder_execution_id': execution_id}
+    _prepare_integration_replay(root, state, app, original.stage_id, resolution=resolution)
+    return True
+
+
 def prepare_application(root, state, *, start_stage=None,
                         target_workflow_version=None, force_initial_plan=False):
     """Carry settled work forward, invalidating only the requested repair tail."""
@@ -840,7 +992,8 @@ def prepare_application(root, state, *, start_stage=None,
                 raise ValueError("continuation has unknown start stage")
             app["flowthrough_resume"]["next_stage"] = start_stage
             app.update(active_group=None, early_active=False)
-        if budget_group is not None:
+        from .integration_repair import INTEGRATION_STAGES
+        if budget_group is not None and start_stage not in INTEGRATION_STAGES:
             app["active_group"] = budget_group
             app["failed_development_group"] = None
             app["flowthrough_resume"] = {
@@ -856,6 +1009,9 @@ def prepare_application(root, state, *, start_stage=None,
                 "settled_coder_task_ids": budget_group["scheduled"],
             }
         _prepare_required_target_restart(root, state, app, start_stage)
+        rebound_integration = _prepare_integration_successor(root, state, app)
+        if start_stage in INTEGRATION_STAGES and not rebound_integration:
+            _prepare_integration_replay(root, state, app, start_stage)
         if target_workflow_version >= 40 and start_stage is None:
             _reconsider_dependency_stop(state, app)
         app["acceptance_status"] = "unverified"
@@ -1137,7 +1293,9 @@ def continue_from_planner(operations, run_dir, run_id, *, next_run_id, reason,
                             resumed['continuation']['support_refs'][
                                 'continuation:interrupted-coder:' + name] = ref
                     if upgrade_workflow:
-                        resumed['watchdog_policy'] = {'enabled': True, 'inactivity_seconds': 600}
+                        resumed['watchdog_policy'], watchdog_diagnostic = _upgrade_watchdog_policy(root, header)
+                        if watchdog_diagnostic:
+                            resumed['continuation']['watchdog_control_diagnostic'] = watchdog_diagnostic
                         from .workflow_upgrade import publish_upgrade_rules
                         rule_refs = publish_upgrade_rules(root, next_run_id)
                         if target_workflow_version >= 34:

@@ -12,6 +12,8 @@ from .watchdog_supervisor import validate_watchdog_decision
 
 _PROOF = ("request_committed", "command_delivered", "execution_authority_revoked",
           "local_process_tree_reaped", "cleanup")
+_CONTROL_PROOF = _PROOF[:3]
+_CLEANUP_PROOF = _PROOF[3:]
 
 
 def _authorization(snapshot, operation, reason):
@@ -31,6 +33,7 @@ def _authorization(snapshot, operation, reason):
         result = (attempt.get("result") or {}).get("value")
         if (attempt.get("state") != "succeeded" or not isinstance(result, dict)
                 or result.get("status") != "completed"
+                or result.get("run_id") != operation.run_id
                 or result.get("stage_id") != "supervisor"
                 or result.get("task_id") != episode.get("supervisor_task_id")
                 or result.get("command_id") != attempt.get("command", {}).get("execution_id")):
@@ -73,12 +76,37 @@ def _evidence(root, header, sdk, snapshot, recovery, operation):
             or entry.kernel_attempt != effect.attempt or entry.fence != effect.fence
             or entry.execution_state != "recovery_required" or entry.task_state != "recovery_required"
             or entry.execution_result_known
-            or any(getattr(entry, field).status != "confirmed" for field in _PROOF)
+            or any(getattr(entry, field).status != "confirmed" for field in _CONTROL_PROOF)
             or not any(row.get("effect_id") == effect.effect_id and row.get("revision") == effect.revision
                        and row.get("attempt") == effect.attempt and row.get("fence") == effect.fence
                        and row.get("state") == "indeterminate" for row in entry.effects)):
         return None
-    return {"schema": "modport.watchdog-assignment-cancellation.v1",
+    independent_cleanup = None
+    if any(getattr(entry, field).status != "confirmed" for field in _CLEANUP_PROOF):
+        # A reopened Runtime has no handle for the old driver. Preserve its
+        # unknown cancellation cleanup facts, while independently rechecking
+        # the original SDK receipt and registered driver under exact authority.
+        if (any(getattr(entry, field).status not in {"confirmed", "unknown"}
+                for field in _CLEANUP_PROOF) or sdk.runtime is None):
+            return None
+        from .interrupted_execution import stopped_execution_evidence
+        independent_cleanup = stopped_execution_evidence(root, header, sdk.runtime,
+            execution, task_id=operation.task_id, snapshot=snapshot, timeout=.5)
+        task = snapshot.get("tasks", {}).get(operation.task_id) or {}
+        attempts = task.get("attempts") or []
+        current_attempt = attempts[-1] if attempts else {}
+        if (independent_cleanup.get("confirmed") is not True
+                or len(attempts) - 1 != recovery.attempt
+                or current_attempt.get("command", {}).get("execution_id") != operation.command_id
+                or current_attempt.get("state") != "recovery_required"
+                or independent_cleanup.get("generation") != current_attempt.get(
+                    "generation", snapshot.get("generation", 0))):
+            return None
+        current = sdk.runtime.kernel.get(operation.command_id)
+        if (current.state != execution.state or current.revision != execution.revision
+                or current.attempt != effect.attempt or current.fence != effect.fence):
+            return None
+    evidence = {"schema": "modport.watchdog-assignment-cancellation.v1",
         "run_id": operation.run_id, "task_id": operation.task_id, "stage_id": operation.stage_id,
         "execution_id": operation.command_id, "effect_id": effect.effect_id,
         "effect_revision": effect.revision, "kernel_attempt": effect.attempt, "fence": effect.fence,
@@ -86,6 +114,9 @@ def _evidence(root, header, sdk, snapshot, recovery, operation):
         "cancellation_receipt_ids": list(entry.receipt_ids),
         "proof": {field: getattr(entry, field).status for field in _PROOF},
         "external_outcome": "unknown", "artifacts_complete": False, "acceptance_status": "unverified"}
+    if independent_cleanup is not None:
+        evidence["independent_cleanup"] = independent_cleanup
+    return evidence
 
 
 def _receipt(root, command, effect, operation, evidence):
@@ -104,10 +135,25 @@ def _receipt(root, command, effect, operation, evidence):
         raise ValueError("watchdog cancellation note is a symlink")
     if note.exists():
         previous = read_json(note)
-        # SDK cleanup may append receipts after a crash. Keep the original
-        # proved note; recovery identity and authorization must still match.
-        stable = lambda value: {key: item for key, item in value.items() if key != "cancellation_receipt_ids"}
-        if stable(previous) != stable(evidence):
+        # A crash may leave the original note before the response is written.
+        # Fresh SDK proof can improve unknown cleanup to confirmed; retain the
+        # original evidence while requiring the same identity/authorization.
+        stable = lambda value: {key: item for key, item in value.items()
+                                if key not in {"cancellation_receipt_ids", "proof", "independent_cleanup"}}
+        old_proof, new_proof = previous.get("proof") or {}, evidence.get("proof") or {}
+        monotonic = (set(old_proof) == set(new_proof) == set(_PROOF)
+                     and all(old_proof[field] == new_proof[field]
+                             or (old_proof[field] == "unknown" and new_proof[field] == "confirmed")
+                             for field in _PROOF))
+        old_cleanup = previous.get("independent_cleanup")
+        new_cleanup = evidence.get("independent_cleanup")
+        cleanup_keys = ("confirmed", "execution_id", "attempt", "fence", "generation", "driver", "driver_state", "cleanup")
+        same_cleanup = (not old_cleanup or not new_cleanup or
+                        all(old_cleanup.get(key) == new_cleanup.get(key) for key in cleanup_keys))
+        retained_cleanup = (not old_cleanup or new_cleanup is not None
+                            or all(new_proof.get(field) == "confirmed" for field in _CLEANUP_PROOF))
+        if (stable(previous) != stable(evidence) or not monotonic
+                or not same_cleanup or not retained_cleanup):
             raise ValueError("watchdog cancellation note differs from the proved cancellation")
     else:
         atomic_json(note, evidence)

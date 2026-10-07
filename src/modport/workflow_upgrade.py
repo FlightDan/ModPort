@@ -13,8 +13,8 @@ from .repair_evidence import snapshot_repair_evidence
 from .workflow import WORKFLOW_VERSION, WorkflowDefinition, compile_migration_workflow
 
 
-UPGRADE_SOURCE_WORKFLOW_VERSION = 38
-UPGRADE_TARGET_WORKFLOW_VERSION = 40
+UPGRADE_SOURCE_WORKFLOW_VERSION = 40
+UPGRADE_TARGET_WORKFLOW_VERSION = WORKFLOW_VERSION
 
 
 def _unique_policy_fields(pairs):
@@ -104,9 +104,10 @@ def validate_upgrade_definition(header):
     canonical_request = request.to_dict()
     # This carried Run froze its inputs before the optional Wiki setting was
     # serialized. Preserve that omission instead of rewriting its frozen request.
-    if (UPGRADE_SOURCE_RUN_ID is not None
-            and header.get('logical_run_id', header.get('run_id')) == UPGRADE_SOURCE_RUN_ID
-            and 'wiki_enabled' not in request_value):
+    selected_predecessor = (UPGRADE_SOURCE_RUN_ID is not None
+                            and header.get('run_id') == UPGRADE_SOURCE_RUN_ID)
+    if ('wiki_enabled' not in request_value
+            and (selected_predecessor or source.get('workflow_version') == WORKFLOW_VERSION)):
         canonical_request.pop('wiki_enabled', None)
     if canonical_request != dict(request_value):
         raise ValueError("workflow upgrade request is not canonical")

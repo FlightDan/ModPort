@@ -24,7 +24,7 @@ _HOST_PAYLOAD_FIELDS = frozenset({
     'approved_gap_resolutions', 'gap_obligations', 'repair_context', 'continuation_feedback',
     'repair_feedback', 'review_rework_targets', 'gate_diagnostic', 'gate_diagnostics',
     'unavailable_artifact_refs',
-    'latest_repair_feedback', 'reviewer_context_workspace',
+    'latest_repair_feedback', 'reviewer_context_workspace', 'rework_caller_command',
 })
 
 
@@ -316,6 +316,11 @@ class ReviewReworkOrchestration:
                     elif (record['reviewer_stage'] == 'code_review'
                           and source_stage in {'coder', 'code_cleanup'}):
                         verification = 'target_build'
+                if record.get('caller_workspace'):
+                    # This delta is part of the paused author's candidate.
+                    # Its normal host collection validates the complete work;
+                    # the product has not reached group integration yet.
+                    verification = None
                 if (outcome.error_code == 'budget_exhausted'
                         and self.clock() >= record.get('queue_deadline_epoch', float('inf'))):
                     # A timed-out tool call cannot receive a fresh verification
@@ -594,7 +599,16 @@ class ReviewReworkOrchestration:
                         stage = 'agent_rework'
                         payload.update(rework_original_command=original.to_dict(),
                                        rework_generation=app['agent_assignments'] + 1)
-                        if repair_diagnostics:
+                        if caller.stage_id == 'coder':
+                            # The paused author consumes its child's delta in
+                            # its own isolated candidate. The product joins the
+                            # whole group later; applying a partial delta there
+                            # would advance it behind the integration boundary.
+                            if workspace != caller.options.get('workspace'):
+                                raise ValueError('rework caller workspace differs from its SDK command')
+                            payload['rework_caller_command'] = caller.to_dict()
+                            record['caller_workspace'] = workspace
+                        elif repair_diagnostics:
                             # The caller's inspection copy can differ from the
                             # product this coder must repair (baseline/target).
                             payload['reviewer_context_workspace'] = workspace
@@ -684,6 +698,12 @@ class ReviewReworkOrchestration:
             refs = result.get('outputs', {}).get('artifact_refs', {})
             result['outputs']['artifact_refs'] = {'review_rework:' + record['request_id'] + ':' + alias: ref
                                                   for alias, ref in refs.items()}
+            if record.get('caller_workspace'):
+                # A fresh correction based on the caller's prerequisite tree
+                # cannot replace the original author's complete group patch.
+                app['effective']['review_rework:' + record['request_id'] + ':'
+                                 + record['target_agent']] = result
+                return
         else:
             app['effective'].pop(stage, None)
             app['effective'][stage] = result

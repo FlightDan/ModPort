@@ -8,7 +8,8 @@ import subprocess
 import time
 
 from . import handlers
-from .development import (_artifact, _clean, _git, _head, _owned, _paths,
+from .business_policy import business_gates_disabled
+from .development import (_artifact, _clean, _git, _head, _owned, _paths, prepare_merge_workspace,
                           _plan, _verified, DevelopmentIntegrateHandler, validate_plan)
 
 
@@ -64,6 +65,7 @@ class PreparationPrepareHandler:
 
 class PreparationIntegrateHandler:
     def __call__(self, command):
+        advisory = business_gates_disabled(command)
         applied = False
         before = None
         workspace = project_path(Path(command.run_dir), 'worktree')
@@ -71,16 +73,19 @@ class PreparationIntegrateHandler:
             if (command.payload.get('development_kind') != 'preparation'
                     or command.payload.get('goal_scope') != 'migration'):
                 raise ValueError('preparation integration scope mismatch')
-            expected, approved = _approved(command)
             plan = _plan(command)
-            if plan != approved:
-                raise ValueError('preparation plan differs from four-round approval')
-            before = plan['base_commit']
-            _clean(command, workspace)
+            if advisory:
+                expected = {'run_id': command.run_id, 'stage': 'development_prepare',
+                            'producer_execution_id': command.command_id}
+            else:
+                expected, approved = _approved(command)
+                if plan != approved:
+                    raise ValueError('preparation plan differs from four-round approval')
+            before = prepare_merge_workspace(command, workspace)
             results = command.payload.get('development_results')
-            if not isinstance(results, list) or len(results) != len(plan['tasks']):
+            if not isinstance(results, list) or (not advisory and len(results) != len(plan['tasks'])):
                 raise ValueError('preparation requires every native coder result')
-            for result in results:
+            for result in results if not advisory else []:
                 if not isinstance(result, dict) or not isinstance(result.get('outputs'), dict):
                     raise ValueError('preparation requires valid native coder results')
                 outputs = result.get('outputs', {})
@@ -95,13 +100,13 @@ class PreparationIntegrateHandler:
             integrated = DevelopmentIntegrateHandler()(replace(command,
                 options={**command.options, 'workspace': 'worktree'}))
             if integrated.status != 'completed':
-                raise ValueError(integrated.detail or 'preparation integration failed')
+                return integrated
             after = _head(command, workspace)
             paths = _paths(command, workspace, before, after)
             owner = {'id': 'shared-preparation', 'kind': 'prepare',
                      'owned_paths': [path for task in plan['tasks'] for path in task['owned_paths']]}
-            _owned(paths, owner)
-            for task in plan['tasks']:
+            _owned(paths, owner, gates_disabled=advisory)
+            for task in plan['tasks'] if not advisory else []:
                 if not any(path == prefix or path.startswith(prefix + '/')
                            for path in paths for prefix in task['owned_paths']):
                     raise ValueError('preparation task has no implemented changes: ' + task['id'])
@@ -127,7 +132,7 @@ class PreparationIntegrateHandler:
             return handlers._result(command, 'completed', outputs={
                 'head': after, 'artifact_refs': {'development_prepare': ref}})
         except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as exc:
-            if applied:
+            if applied and not advisory:
                 rollback = replace(command, options={**command.options, 'deadline_epoch': time.time() + 30})
                 try:
                     _git(rollback, workspace, 'reset', '--hard', before)

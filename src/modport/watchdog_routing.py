@@ -159,6 +159,9 @@ def decide(owner, snapshot, header, app, sdk):
         return operations, False
     supervisor = snapshot['tasks'].get(episode['supervisor_task_id'])
     if not supervisor or supervisor['attempts'][-1]['state'] not in TERMINAL:
+        if supervisor and supervisor['attempts'][-1]['state'] == 'recovery_required':
+            from .interrupted_supervision import request_cancellation
+            operations += request_cancellation(owner, snapshot, header, app, sdk, episode)
         return operations, True
     if 'decision' not in episode:
         command, result = owner._flowthrough_outcome(supervisor['attempts'][-1])

@@ -22,17 +22,42 @@ from .development import (
     _apply,
     _artifact,
     _check_ref,
-    _clean,
     _head,
     _path,
     _verified,
+    development_workspace,
+    prepare_merge_workspace,
     validate_plan,
 )
 from .goal_planning import validate_goal
 from .workspace import is_project_workspace, project_path, project_relative, workspace_spec
 
 
-def _reviewer_scope(root: Path, reviewer_workspace: Path) -> tuple[Path, str]:
+def rework_workspace(command: OperationInput) -> str:
+    """Resolve the destination bound by the host to the requesting SDK author."""
+    destination = command.payload.get('reviewer_workspace')
+    caller_raw = command.payload.get('rework_caller_command')
+    if caller_raw is None:
+        if destination not in {'baseline', 'worktree'}:
+            raise ValueError('coder rework requires a registered product or bound caller workspace')
+        return destination
+    caller = OperationInput.from_dict(caller_raw)
+    if (caller.stage_id != 'coder' or caller.run_id != command.run_id
+            or caller.command_id != command.payload.get('reviewer_execution_id')
+            or Path(caller.run_dir).resolve() != Path(command.run_dir).resolve()):
+        raise ValueError('coder rework caller does not match its SDK execution')
+    task = caller.payload.get('development_task')
+    generation = caller.payload.get('development_generation')
+    if not isinstance(task, Mapping) or type(generation) is not int or generation < 1:
+        raise ValueError('coder rework caller lacks its isolated task binding')
+    expected = development_workspace(generation, _path(task.get('id')), caller.payload)
+    if destination != expected or caller.options.get('workspace') != expected:
+        raise ValueError('coder rework destination differs from its bound caller workspace')
+    return expected
+
+
+def _reviewer_scope(root: Path, reviewer_workspace: Path, *,
+                    command: OperationInput | None = None) -> tuple[Path, str]:
     """Resolve only the exact host-registered review workspaces."""
     root = Path(root).resolve()
     requested = Path(reviewer_workspace)
@@ -43,8 +68,12 @@ def _reviewer_scope(root: Path, reviewer_workspace: Path) -> tuple[Path, str]:
             logical = project_relative(root, requested)
     else:
         logical = requested
-    if logical.as_posix() not in {"baseline", "worktree"}:
-        raise ValueError("reviewer workspace must be the registered baseline or worktree root")
+    allowed = ({rework_workspace(command)} if command is not None
+               and ('reviewer_workspace' in command.payload
+                    or 'rework_caller_command' in command.payload)
+               else {"baseline", "worktree"})
+    if logical.as_posix() not in allowed:
+        raise ValueError("reviewer workspace must be the exact host-registered rework destination")
     workspace = project_path(root, logical)
     if (workspace.is_symlink() or workspace.resolve() != workspace.absolute()
             or not workspace.is_dir() or not is_project_workspace(root, workspace)
@@ -182,7 +211,7 @@ def _run_coder_rework(
     root = handlers._run_root(command)
     if Path(original.run_dir).resolve() != root:
         raise ValueError("coder rework target belongs to another Run directory")
-    workspace, source_relative = _reviewer_scope(root, reviewer_workspace)
+    workspace, source_relative = _reviewer_scope(root, reviewer_workspace, command=command)
 
     advisory = business_gates_disabled(command)
     source_task = original.payload.get("development_task")
@@ -254,8 +283,8 @@ def _run_coder_rework(
     )
     progress_refs["coder_rework_request"] = request_ref
 
-    _clean(command, workspace)
-    base = _head(command, workspace)
+    base = prepare_merge_workspace(command, workspace,
+                                   report_paths=command.payload.get('reviewer_report_paths', ()))
     generation = command.payload.get("rework_generation", command.options.get("agent_assignment"))
     if type(generation) is not int or generation < 1:
         raise ValueError("coder rework generation must be positive")
@@ -311,14 +340,20 @@ def _run_coder_rework(
         {"target_execution_id": original.command_id},
     )
     progress_refs["coder_rework_goal"] = goal_ref
-    relative_workspace = f"workspaces/development/g{generation}/{task['id']}"
+    # A child is a new assignment, not a continuation of the selected author's
+    # segment. Do not inherit that author's workspace epoch into its clone.
+    delegated_payload = {name: value for name, value in command.payload.items()
+                         if name not in {'recovered_partial_patch', 'recovered_rework_request',
+                                         'coder_revival'}}
+    delegated_payload['development_workspace_epoch'] = None
+    relative_workspace = development_workspace(generation, task['id'], delegated_payload)
     model, effort = (handlers._agent_model_policy(command)
                      if command.options.get('workflow_version', 0) >= 15
                      else (task['model'], task['reasoning_effort']))
     delegated = replace(
         command,
         payload={
-            **command.payload,
+            **delegated_payload,
             "development_base": base,
             "execution_development_plan": plan,
             "development_generation": generation,
@@ -377,14 +412,15 @@ def _run_coder_rework(
     paths = coder.outputs.get("paths")
     if not advisory and (not isinstance(paths, list) or not paths or patch.stat().st_size == 0):
         raise ValueError("coder rework produced no candidate delta")
-    _clean(command, workspace)
-    observed = _head(command, workspace)
-    if observed != base:
-        raise ValueError("reviewer workspace HEAD changed during coder rework")
+    integration_base = prepare_merge_workspace(command, workspace,
+        report_paths=command.payload.get('reviewer_report_paths', ()))
+    conflicts = []
+    caller_bound = isinstance(command.payload.get('rework_caller_command'), Mapping)
 
     integration_started = True
     try:
-        _apply(delegated, workspace, patch, task)
+        _apply(delegated, workspace, patch, task,
+               conflict_handoff=conflicts if caller_bound else None)
         after = _head(command, workspace)
         if after == base and not advisory:
             raise ValueError("coder rework did not advance the reviewer workspace")
@@ -393,12 +429,16 @@ def _run_coder_rework(
             "target_execution_id": original.command_id,
             "rework_execution_id": command.command_id,
             "base": base,
+            "integration_base": integration_base,
             "head": after,
             "paths": paths,
             "generation": generation,
         }
         if advisory:
-            integration['status'] = 'integrated' if after != base else 'no_changes'
+            integration['status'] = ('conflict' if conflicts else
+                                     'integrated' if after != integration_base else 'no_changes')
+            if conflicts:
+                integration['conflicts'] = conflicts
         integration_ref = _artifact(
             command,
             "coder-rework-integration.json",
@@ -407,7 +447,7 @@ def _run_coder_rework(
         refs["coder_rework_integration"] = integration_ref
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
         if integration_started:
-            _rollback_integration(command, workspace, base)
+            _rollback_integration(command, workspace, integration_base)
         raise
     from .repair_context import inherited_harness_candidate_mode, observe_candidate
     candidate_fields = {}
@@ -417,7 +457,7 @@ def _run_coder_rework(
             workspace, inherited_harness=True)
     return handlers._result(
         command,
-        coder.status if advisory else "completed",
+        "failed" if conflicts else coder.status if advisory else "completed",
         outputs={
             **coder.outputs,
             **common,
@@ -426,13 +466,19 @@ def _run_coder_rework(
             **candidate_fields,
             "paths": paths,
             "rework_instructions": instructions,
+            **({'dependency_conflicts': conflicts} if conflicts else {}),
             **({'integration_status': integration['status']} if advisory else {}),
             "artifact_refs": refs,
         },
-        detail=("targeted coder rework produced no integrated changes; execution diagnostics retained"
+        detail=("coder rework merge conflicts require resolution in the requesting author's workspace: "
+                + ', '.join(path for conflict in conflicts for path in conflict['paths'])
+                if conflicts else
+                (coder.detail or coder.error_code or 'coder rework execution failed')
+                if coder.status != 'completed' else
+                "targeted coder rework produced no integrated changes; execution diagnostics retained"
                 if advisory and integration['status'] == 'no_changes' else
                 "targeted coder rework integrated and remains subject to the active review"),
-        error_code=coder.error_code if advisory else None,
+        error_code="coder_rework_conflict" if conflicts else coder.error_code if advisory else None,
     )
 
 
@@ -454,7 +500,7 @@ def run_coder_rework(
     result: OperationResult | None = None
     try:
         root = handlers._run_root(command)
-        workspace, _ = _reviewer_scope(root, workspace)
+        workspace, _ = _reviewer_scope(root, workspace, command=command)
         _, retained = _review_outputs(command, workspace)
         result = _run_coder_rework(
             command, original, workspace, instructions, progress_refs=progress_refs)

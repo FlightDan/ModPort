@@ -351,6 +351,8 @@ class MigrationOperations(DownstreamGateOrchestration, ReviewReworkOrchestration
                             raise ValueError("handler deployment changed; resume with the matching implementation")
                 for ref in header["initial_refs"].values():
                     verified_path(root, ref)
+                from .desktop_state import publish_observation_binding
+                publish_observation_binding(header, runtime)
                 yield root, header, runtime, sdk
             finally:
                 sdk.close()
@@ -577,7 +579,7 @@ class MigrationOperations(DownstreamGateOrchestration, ReviewReworkOrchestration
 
     def _schedule(self, snapshot, header, app, stage, *, causation_id=None,
                   task_id=None, dependencies=None, payload=None, extra_options=None, activate=True,
-                  artifact_overrides=None, upstream_overrides=None):
+                  artifact_overrides=None, upstream_overrides=None, prior_findings_override=None):
         from .workflow import SOURCE_HARNESS_STAGES
         if source_reading_policy(header) and stage in SOURCE_HARNESS_STAGES:
             return self._finish(app, 'source_harness_disabled_by_policy')
@@ -693,7 +695,8 @@ class MigrationOperations(DownstreamGateOrchestration, ReviewReworkOrchestration
             options.pop("model_policy", None)
         if is_model_stage and workflow_version >= 15:
             options["model"], options["reasoning_effort"] = model, effort
-        findings = list(header["prior_findings"])
+        findings = list(header["prior_findings"] if prior_findings_override is None
+                        else prior_findings_override)
         if app["rework_context"]:
             findings += app["rework_context"].get("findings", [])
         context = app.get("repair_context")
@@ -1489,7 +1492,31 @@ class MigrationOperations(DownstreamGateOrchestration, ReviewReworkOrchestration
             return self._finish(app, 'final_cleanup_revalidation_incomplete')
         return None
 
+    def _integration_boundary(self, snapshot, header, app, stage, execution_id, outcome=None):
+        """An unfinished merge needs an actual repair before its consumers run."""
+        from .integration_repair import INTEGRATION_STAGES, start_or_resume
+        if stage not in INTEGRATION_STAGES:
+            return None
+        result = outcome.to_dict() if isinstance(outcome, OperationResult) else outcome
+        if result is None:
+            result = app.get('effective', {}).get(stage)
+        if not isinstance(result, dict) or result.get('status') == 'completed':
+            return None
+        self._flowthrough_diagnostic(app, result, note='unfinished integration boundary')
+        if app.get('stop_reason'):
+            return self._finish(app, app['stop_reason'], app.get('stop_state') or 'failed')
+        if result.get('error_code') == 'integration_merge_required':
+            operations = start_or_resume(self, snapshot, header, app, outcome=result)
+            if operations is not None:
+                return operations
+        # Raw patch, workspace, identity and transport errors are not evidence
+        # of a semantic conflict and never authorize another coder attempt.
+        return self._finish(app, result.get('error_code') or 'integration_failed')
+
     def _flowthrough_schedule_successor(self, snapshot, header, app, stage, execution_id):
+        integration = self._integration_boundary(snapshot, header, app, stage, execution_id)
+        if integration is not None:
+            return integration
         final = self._final_cleanup_successor(snapshot, header, app, stage, execution_id)
         if final is not None:
             return final
@@ -1556,6 +1583,10 @@ class MigrationOperations(DownstreamGateOrchestration, ReviewReworkOrchestration
                 continue
             self._flowthrough_record(app, command, outcome)
             self._flowthrough_stage_effects(header, app, command, outcome)
+            integration = self._integration_boundary(
+                snapshot, header, app, command.stage_id, command.command_id, outcome)
+            if integration is not None:
+                return operations + integration
             if (source_reading_policy(header) and command.stage_id == 'behavior_freeze'
                     and outcome.status != 'completed'):
                 return operations + self._finish(app, outcome.error_code or 'behavior_requirements_missing')
@@ -1867,6 +1898,45 @@ class MigrationOperations(DownstreamGateOrchestration, ReviewReworkOrchestration
         return operations
 
     def _advance_without_business_gates(self, snapshot, header, app):
+        from .integration_repair import INTEGRATION_STAGES, start_or_resume
+        if app.get('stop_reason'):
+            # The outer driver owns exact cancellation and cleanup settlement.
+            return []
+        replay = app.get('integration_replay')
+        if isinstance(replay, dict):
+            original = OperationInput.from_dict(read_json(
+                verified_path(Path(header['run_dir']), replay['command_ref'])))
+            if (original.stage_id not in INTEGRATION_STAGES
+                    or original.stage_id != replay.get('stage')
+                    or original.command_id != replay.get('source_execution_id')):
+                raise ValueError('integration replay differs from its selected execution')
+            payload = json_copy(original.payload)
+            carried = payload.setdefault('carried_development_results', {})
+            for result in payload.get('development_results', []):
+                if isinstance(result, dict) and isinstance(result.get('command_id'), str):
+                    carried.setdefault(result['command_id'], {'source_execution_id': original.command_id})
+            host_options = {'workflow_version', 'deadline_epoch', 'agent_assignment', 'rework_round',
+                            'model', 'reasoning_effort', 'model_policy', 'gate_policy',
+                            'business_gates_disabled', 'progress_supervision_policy',
+                            'validation_policy', 'agent_dialogue_policy', 'acceptance_rubric_sha256'}
+            replay_operations = self._schedule(
+                snapshot, header, app, original.stage_id, task_id=original.task_id,
+                dependencies=[], causation_id=original.command_id,
+                payload=payload, artifact_overrides=original.artifact_refs,
+                upstream_overrides=original.upstream_results,
+                prior_findings_override=original.prior_findings,
+                extra_options={key: value for key, value in original.options.items()
+                               if key not in host_options})
+            if any(op['kind'] in {'add_task', 'new_attempt'} for op in replay_operations):
+                app.pop('integration_replay', None)
+                app.pop('flowthrough_resume', None)
+            return replay_operations
+        repair = start_or_resume(self, snapshot, header, app)
+        if repair is not None:
+            resume = app.get('flowthrough_resume')
+            if isinstance(resume, dict) and resume.get('stage') in INTEGRATION_STAGES:
+                app.pop('flowthrough_resume', None)
+            return repair
         current_skill_generation = (
             header.get("definition", {}).get("workflow_version", 0) >= 25
             and header["request"].get("workflow_mode") == "skill_generation"
@@ -1904,6 +1974,10 @@ class MigrationOperations(DownstreamGateOrchestration, ReviewReworkOrchestration
                 "effective", {}).get(stage)
             if isinstance(result, dict):
                 self._flowthrough_diagnostic(app, result, note="continued failed boundary")
+            integration = self._integration_boundary(
+                snapshot, header, app, stage, resume.get('command_id'), result)
+            if integration is not None:
+                return integration
             if (required_behavior_policy(header) and source_reading_policy(header)
                     and resume.get("required_target_restart") is True):
                 restart = app.get("continuation_feedback", {}).get("target_restart", {})
@@ -3882,6 +3956,11 @@ class MigrationOperations(DownstreamGateOrchestration, ReviewReworkOrchestration
         observed = self._audited_observation(sdk, header)
         stored_snapshot = observed["snapshot"]
         snapshot = hydrate_run_snapshot(root, stored_snapshot)
+        from .interrupted_supervision import settle as settle_interrupted_supervisor
+        if settle_interrupted_supervisor(root, header, sdk, snapshot):
+            observed = self._audited_observation(sdk, header)
+            stored_snapshot = observed['snapshot']
+            snapshot = hydrate_run_snapshot(root, stored_snapshot)
         from .watchdog_settlement import settle as settle_watchdog_effects
         if settle_watchdog_effects(root, header, sdk, snapshot):
             observed = self._audited_observation(sdk, header)
@@ -4060,11 +4139,10 @@ class MigrationOperations(DownstreamGateOrchestration, ReviewReworkOrchestration
                 preflight_opencode_host(root, model=model, reasoning_effort=effort)
             runtime.reap()
             sdk.sync()
-            from .watchdog_events import accept_notification, enabled as watchdog_enabled
-            if watchdog_enabled(header, preflight_app):
-                sdk.collect_notifications()
-                sdk.deliver_notifications(lambda notice: accept_notification(root, notice),
-                    owner='modport-driver-start:' + run.run_id, limit=100)
+            from .interrupted_execution import reconcile_interrupted_executions
+            reconcile_interrupted_executions(root, header, runtime, sdk)
+            from .watchdog_events import collect_runtime_notifications
+            collect_runtime_notifications(sdk, header, preflight_app)
             state = self.tick(sdk, header)
             if self.handlers is None and self.isolation_mode == 'process' and state['state'] not in TERMINAL:
                 from .run_monitor import start_monitor
@@ -5258,6 +5336,8 @@ class MigrationOperations(DownstreamGateOrchestration, ReviewReworkOrchestration
                 raise ValueError("native goal recovery is forbidden after user cancellation")
             runtime.reap()
             sdk.sync()
+            from .interrupted_execution import reconcile_interrupted_executions
+            reconcile_interrupted_executions(root, header, runtime, sdk)
             self._settle_cancelled_coder_effects(root, header, sdk)
             self._settle_progress_cancelled_effects(root, header, sdk)
             # The SDK reads Kernel authority even when the orchestration view

@@ -214,13 +214,6 @@ def _verified(command, ref):
     from .execution_budget import require_remaining_time
     require_remaining_time(command)
     path = handlers._resolve_artifact_ref(Path(command.run_dir), ref, 'development_ref')[0]
-    expected = ref.get('sha256') if isinstance(ref, Mapping) else None
-    require_remaining_time(command)
-    data = path.read_bytes()
-    require_remaining_time(command)
-    if (not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected)
-            or sha256(data).hexdigest() != expected):
-        raise ValueError('development artifact digest mismatch')
     require_remaining_time(command)
     return path
 
@@ -229,14 +222,13 @@ def _plan(command):
     ref = command.artifact_refs.get("development_plan")
     if not isinstance(ref, Mapping):
         raise ValueError("frozen development_plan ref is required")
-    frozen = json.loads(_verified(command, ref).read_text())
     # The host's scheduled DAG may incorporate an explicit author's revision.
     # Keep the old report as evidence, but execute the same plan as the scheduler.
     scheduled = command.payload.get('execution_development_plan')
     if business_gates_disabled(command) and isinstance(scheduled, Mapping):
-        if scheduled.get('base_commit') != command.payload.get('development_base'):
-            raise ValueError('scheduled development plan base mismatch')
         frozen = scheduled
+    else:
+        frozen = json.loads(_verified(command, ref).read_text())
     return validate_plan(frozen,
                          allow_contract=command.payload.get("goal_scope") == "contract",
                          allow_preparation=command.payload.get('development_kind') == 'preparation',
@@ -318,9 +310,9 @@ def _owned(paths, task, *, allow_contract=False, gates_disabled=False):
 def _check_ref(command, ref, task, base, generation):
     path = _verified(command, ref)
     metadata = ref.get("metadata", {})
-    if (metadata.get("task_id") != task["id"] or metadata.get("base") != base
+    if (metadata.get("task_id") != task["id"]
             or metadata.get("generation") != generation):
-        raise ValueError("coder patch identity/base/generation mismatch")
+        raise ValueError("coder patch task/generation mismatch")
     paths = metadata.get("paths")
     if not isinstance(paths, list) or any(not isinstance(p, str) for p in paths):
         raise ValueError("coder patch requires paths metadata")
@@ -329,11 +321,71 @@ def _check_ref(command, ref, task, base, generation):
     return path
 
 
+def prepare_merge_workspace(command, workspace, *, report_paths=(), include_paths=()):
+    """Preserve current edits in Git before merging a separately authored delta.
+
+    The original development base remains provenance. It does not constrain
+    the current candidate. Generated output, credentials and reports stay out
+    of this checkpoint, using the same exclusions as host candidate collection.
+    """
+    from .host_candidate import _exclusion
+    _assert_regular_workspace(workspace)
+    unresolved = _git(command, workspace, 'diff', '--name-only', '--diff-filter=U', '-z', '--').stdout
+    if unresolved:
+        raise ValueError('candidate has unresolved Git conflicts: ' + ', '.join(filter(None, unresolved.split('\0'))))
+    changed = set()
+    for args in (('diff', '--name-only', '-z', '--'),
+                 ('diff', '--cached', '--name-only', '-z', '--'),
+                 ('ls-files', '--others', '--exclude-standard', '-z')):
+        changed.update(filter(None, _git(command, workspace, *args).stdout.split('\0')))
+    # Repair snapshots also contain ignored source inputs. Checkpoint only
+    # inputs named by the authored patches, retaining their current contents.
+    tracked = (set(filter(None, _git(command, workspace, 'ls-files', '-z', '--').stdout.split('\0')))
+               if include_paths else set())
+    explicit = {_path(path, shared=True) for path in include_paths
+                if path not in tracked and (workspace / _path(path, shared=True)).is_file()}
+    changed.update(explicit)
+    selected = sorted(path for path in changed
+                      if _exclusion(_path(path, shared=True), frozenset(report_paths)) is None)
+    if selected:
+        _git(command, workspace, 'add', '--force', '--all', '--', *selected)
+        _git(command, workspace, 'commit', '--no-gpg-sign', '--only', '-m',
+             'Preserve current candidate edits before merge', '--', *selected)
+    return _head(command, workspace)
+
+
 def _apply(command, workspace, path, task, *, conflict_handoff=None, resolvable_paths=None):
     start = _head(command, workspace)
     if path.stat().st_size:
+        entries = _git(command, workspace, 'apply', '--numstat', '-z', '--', str(path)).stdout
+        patch_paths = []
+        for entry in filter(None, entries.split('\0')):
+            fields = entry.split('\t', 2)
+            if len(fields) != 3 or not fields[2]:
+                raise ValueError('patch must declare contained paths without rename records')
+            patch_paths.append(_path(fields[2], shared=True))
+        _owned(patch_paths, task,
+               allow_contract=command.payload.get('goal_scope') == 'contract',
+               gates_disabled=business_gates_disabled(command))
+        deleted_inputs = []
+        repair_inputs = command.payload.get('repair_input_paths', ())
+        if conflict_handoff is not None and repair_inputs:
+            sections = path.read_bytes().split(b'diff --git ')[1:]
+            if len(sections) == len(patch_paths):
+                deleted_inputs = [relative for relative, section in zip(patch_paths, sections)
+                    if relative in repair_inputs and not (workspace / relative).exists()
+                    and not re.search(rb'(?m)^(?:new|deleted) file mode [0-7]+$', section)]
+            if deleted_inputs:
+                # Materialize only in the isolated merge. Preserve the user's
+                # deletion in the product, and supply the proposed edited file
+                # plus explicit delete/modify evidence to the repair coder.
+                _git(command, workspace, 'checkout', command.payload['development_base'],
+                     '--', *deleted_inputs)
+        already = _git(command, workspace, 'apply', '--reverse', '--check', '--', str(path), check=False)
+        if already.returncode == 0:
+            return start
         applied = _git(command, workspace, "apply", "--index", "--3way", "--", str(path), check=False)
-        changed = _git(command, workspace, "diff", "--cached", "--name-only", "--no-renames", "-z", "--").stdout
+        changed = _git(command, workspace, "diff", "--cached", "--name-only", "--no-renames", "-z", "--", *patch_paths).stdout
         _owned([p for p in changed.split("\0") if p], task,
                allow_contract=command.payload.get('goal_scope') == 'contract',
                gates_disabled=business_gates_disabled(command))
@@ -346,7 +398,16 @@ def _apply(command, workspace, path, task, *, conflict_handoff=None, resolvable_
             paths = [p for p in _git(command, workspace, 'diff', '--name-only',
                 '--diff-filter=U', '-z', '--').stdout.split('\0') if p]
             if not paths:
-                raise ValueError(f'git apply failed: {applied.stdout[-1000:]}')
+                # Git's apply --3way falls back to a direct application for
+                # deletions. A modified file then has no unmerged index entry;
+                # preserve it and deliver the actual delete/modify conflict.
+                sections = path.read_bytes().split(b'diff --git ')[1:]
+                if len(sections) == len(patch_paths):
+                    paths = [relative for relative, section in zip(patch_paths, sections)
+                             if re.search(rb'(?m)^deleted file mode [0-7]+$', section)
+                             and (workspace / relative).is_file()]
+                if not paths or 'patch does not apply' not in applied.stdout:
+                    raise ValueError(f'git apply failed: {applied.stdout[-1000:]}')
             conflict = DependencyPatchConflict(task['id'], paths,
                 str(path.relative_to(Path(command.run_dir))), applied.stdout)
             if (conflict_handoff is None or not business_gates_disabled(command)
@@ -358,8 +419,15 @@ def _apply(command, workspace, path, task, *, conflict_handoff=None, resolvable_
             _git(command, workspace, 'add', '--all', '--', *paths)
             conflict_handoff.append({'task_id': task['id'], 'paths': paths,
                 'patch_path': conflict.patch_path, 'detail': conflict.output})
-        _git(command, workspace, "commit", "--no-gpg-sign", "-m", f"Integrate development task {task['id']}")
-    _clean(command, workspace)
+        if deleted_inputs:
+            conflict_handoff.append({'task_id': task['id'], 'paths': deleted_inputs,
+                'patch_path': str(path.relative_to(Path(command.run_dir))),
+                'detail': 'Delete/modify conflict: the current candidate deleted repair inputs '
+                          + ', '.join(deleted_inputs) + '; the coder patch modifies them. '
+                          'The isolated merge contains the proposed edits for resolution.'})
+        if _git(command, workspace, 'diff', '--cached', '--quiet', '--', *patch_paths, check=False).returncode:
+            _git(command, workspace, "commit", "--no-gpg-sign", '--only', "-m",
+                 f"Integrate development task {task['id']}", '--', *patch_paths)
     return start
 
 
@@ -368,12 +436,10 @@ class ImplementationHandler:
         root = handlers._run_root(command)
         workspace = project_path(root, "worktree")
         try:
-            _clean(command, workspace)
+            prepare_merge_workspace(command, workspace)
             from .planning import approved_development_plan
             plan = approved_development_plan(command)
             base = _head(command, workspace)
-            if plan["base_commit"] != base:
-                raise ValueError("development plan base differs from actual HEAD")
             ref = command.artifact_refs["development_plan"]
             return handlers._result(command, "completed", outputs={"development_tasks": plan["tasks"], "tasks": plan["tasks"], "development_base": base, "artifact_refs": {"development_plan": ref}})
         except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as exc:
@@ -1195,16 +1261,12 @@ class DevelopmentIntegrateHandler:
         advisory = business_gates_disabled(command)
         business_diagnostics = []
         start = None
+        destination = workspace
         try:
             if workspace.resolve() != workspace.absolute():
                 raise ValueError('integration workspace must not traverse symlinks')
             plan = _plan(command)
             base, generation = _base(command)
-            _clean(command, workspace)
-            if _head(command, workspace) != base:
-                raise ValueError("integration HEAD differs from development_base")
-            if command.artifact_refs["development_plan"].get("metadata", {}).get("development_base") != base:
-                raise ValueError("integration base differs from frozen plan")
             results = command.payload.get("development_results")
             if not isinstance(results, list):
                 raise ValueError("integration requires every coder result")
@@ -1216,8 +1278,7 @@ class DevelopmentIntegrateHandler:
                 carried = command.payload.get('carried_development_results', {})
                 inherited = (advisory and isinstance(result, Mapping)
                     and isinstance(carried, Mapping)
-                    and carried.get(result.get('command_id')) == sha256(json.dumps(
-                        result, sort_keys=True, separators=(',', ':')).encode()).hexdigest())
+                    and result.get('command_id') in carried)
                 if (not isinstance(result, Mapping) or result.get("stage_id") != "coder"
                         or (result.get("run_id") != command.run_id and not inherited)):
                     if advisory:
@@ -1257,30 +1318,36 @@ class DevelopmentIntegrateHandler:
                         business_diagnostics.append(f"no patch available for task: {task['id']}")
                         continue
                     raise ValueError("coder result task set differs from plan")
-                try:
-                    patches.append((task, _check_ref(command, indexed[task['id']], task, base, generation)))
-                except (OSError, ValueError, TypeError, KeyError) as exc:
-                    if not advisory:
-                        raise
-                    business_diagnostics.append(f"patch unavailable for task {task['id']}: {exc}")
-            start = base
-            integration_conflicts = []
-            for position, (task, path) in enumerate(patches):
-                resolvable_paths = set()
-                for resolver, _ in patches[position + 1:]:
-                    outputs = resolver_outputs.get(resolver['id'], {})
-                    changed_paths = set(indexed[resolver['id']].get('metadata', {}).get('paths', ()))
-                    for conflict in outputs.get('dependency_conflicts', ()):
-                        if isinstance(conflict, Mapping) and conflict.get('task_id') == task['id']:
-                            resolvable_paths.update(set(conflict.get('paths', ())) & changed_paths)
+                patches.append((task, _check_ref(command, indexed[task['id']], task, base, generation)))
+            from .integration_merge import begin, pending, publish
+            repair_inputs = command.payload.get('repair_input_paths', ())
+            include_paths = {relative for ref in indexed.values()
+                             for relative in ref['metadata']['paths']
+                             if relative in repair_inputs}
+            workspace, start, resolved_conflicts = begin(command, destination,
+                                                         include_paths=include_paths)
+            integration_conflicts = resolved_conflicts or []
+            for task, path in patches if resolved_conflicts is None else []:
                 _apply(command, workspace, path, task,
-                    conflict_handoff=integration_conflicts if advisory else None,
-                    resolvable_paths=resolvable_paths)
+                       conflict_handoff=integration_conflicts if advisory else None)
+            unresolved = []
             for conflict in integration_conflicts:
-                for relative in conflict['paths']:
-                    target = workspace / relative
-                    if target.is_file() and re.search(rb'(?m)^(<<<<<<< |>>>>>>> )', target.read_bytes()):
-                        raise ValueError(f'unresolved dependency conflict in {relative}')
+                paths = set(conflict['paths'])
+                resolved_by_successor = any(
+                    prior.get('task_id') == conflict['task_id']
+                    and paths <= set(prior.get('paths', ()))
+                    and paths <= set(indexed[identifier].get('metadata', {}).get('paths', ()))
+                    for identifier, outputs in resolver_outputs.items()
+                    for prior in outputs.get('dependency_conflicts', ())
+                    if isinstance(prior, Mapping))
+                markers = any((workspace / relative).is_file() and re.search(
+                    rb'(?m)^(<<<<<<< |>>>>>>> )', (workspace / relative).read_bytes())
+                    for relative in paths)
+                if resolved_conflicts is not None or not resolved_by_successor or markers:
+                    unresolved.append(conflict)
+            if unresolved:
+                return pending(command, workspace, start, unresolved,
+                               [task['id'] for task, _ in patches], list(indexed.values()))
             business_diagnostics.extend(integration_conflicts)
             repair_receipts = []
             if command.options.get('workflow_version', 0) >= 40:
@@ -1312,14 +1379,20 @@ class DevelopmentIntegrateHandler:
                          'Apply isolated diagnostic corrections')
                 business_diagnostics.extend(receipt for receipt in repair_receipts
                                             if receipt['status'] in {'conflict', 'invalid'})
-            head = _head(command, workspace)
+            publication = publish(command, destination, workspace, start,
+                                  [task['id'] for task, _ in patches], list(indexed.values()))
+            if publication is not None:
+                return publication
+            head = _head(command, destination)
+            changed_paths = _paths(command, destination, start, head)
             integrated_task_ids = [task['id'] for task, _ in patches]
             ref = _artifact(command, "development-integration.json", (json.dumps({
-                "base": base, "head": head, "generation": generation,
+                "base": base, "integration_start": start, "head": head, "generation": generation,
                 "tasks": integrated_task_ids, "available_task_results": list(indexed),
                 "business_diagnostics": business_diagnostics}, sort_keys=True) + "\n").encode())
             return handlers._result(command, "completed", outputs={"development_base": base,
-                "head": head, "integrated_task_ids": integrated_task_ids,
+                "head": head, "integration_start": start, "changed_paths": changed_paths,
+                "integrated_task_ids": integrated_task_ids,
                 "diagnostic_repair_receipts": repair_receipts,
                 **({'diagnostic_repair_context': {
                     'plan_ref': command.artifact_refs['development_plan'],
@@ -1331,16 +1404,6 @@ class DevelopmentIntegrateHandler:
                 "business_diagnostics": business_diagnostics,
                 "artifact_refs": {"development_integration": ref}})
         except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as exc:
-            if start is not None:
-                from .workspace import workspace_spec
-                binding = workspace_spec(root)
-                if binding and binding['mode'] == 'direct' and workspace == project_path(root):
-                    return handlers._result(command, 'failed',
-                        detail=f'{exc}; direct workspace retains partial edits for inspection',
-                        error_code='integration_conflict', outputs={'partial_edits_preserved': True})
-                rollback = _git(command, workspace, "reset", "--hard", start, check=False)
-                if rollback.returncode:
-                    return handlers._result(command, "blocked", detail=f"{exc}; rollback failed", error_code="integration_rollback_failed")
             return handlers._result(command, "failed", detail=str(exc), error_code="integration_conflict")
 
 

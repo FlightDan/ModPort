@@ -19,7 +19,7 @@ class CurrentWorkflowUpgradeTests(unittest.TestCase):
         self.selection.start()
         self.addCleanup(self.selection.stop)
 
-    def header(self, version=38):
+    def header(self, version=40):
         request = MigrationRequest('fixture', 'https://example.invalid/fixture.git',
             '1.21', '26.1', source_loader='neoforge', budget=Budget(max_seconds=86400))
         return {'run_id': TEST_PREDECESSOR_RUN_ID, 'request': request.to_dict(),
@@ -57,26 +57,33 @@ class CurrentWorkflowUpgradeTests(unittest.TestCase):
             current = self.header(WORKFLOW_VERSION)
             self.assertEqual(current['definition'], validate_upgrade_definition(current))
 
-    def test_no_selection_does_not_allow_missing_wiki_setting(self):
+    def test_current_optional_wiki_omission_preserves_default_semantics(self):
         header = self.header(WORKFLOW_VERSION)
         header.pop('run_id')
         header['request'].pop('wiki_enabled')
         header['definition']['request'].pop('wiki_enabled')
         with patch.object(workflow_upgrade, 'UPGRADE_SOURCE_RUN_ID', None):
-            with self.assertRaisesRegex(ValueError, 'not canonical'):
-                validate_upgrade_definition(header)
+            self.assertEqual(header['definition'], validate_upgrade_definition(header))
 
-    def test_carried_v40_preserves_absent_optional_wiki_setting(self):
-        header = self.header(WORKFLOW_VERSION)
-        header.update(run_id='current-successor', logical_run_id=TEST_PREDECESSOR_RUN_ID)
+    def test_carried_successor_preserves_absent_optional_wiki_setting(self):
+        header = self.header()
+        header['logical_run_id'] = 'earlier-historical-segment'
         header['request'].pop('wiki_enabled')
         header['definition']['request'].pop('wiki_enabled')
         original = deepcopy(header)
-        self.assertEqual(header['definition'], validate_upgrade_definition(header))
+        current = validate_upgrade_definition(header)
+        self.assertEqual(WORKFLOW_VERSION, current['workflow_version'])
+        self.assertNotIn('wiki_enabled', current['request'])
         self.assertEqual(original, header)
-        header['logical_run_id'] = 'retired-peer'
+        successor = {**header, 'run_id': 'current-successor', 'definition': current}
+        self.assertEqual(current, validate_upgrade_definition(successor))
+        header['run_id'] = 'retired-peer'
         with self.assertRaisesRegex(ValueError, 'not canonical'):
             validate_upgrade_definition(header)
+
+    def test_older_workflows_are_not_supported_by_current_upgrade(self):
+        with self.assertRaisesRegex(ValueError, 'exact supported'):
+            validate_upgrade_definition(self.header(38))
 
 
 class PrivateUpgradePolicyTests(unittest.TestCase):

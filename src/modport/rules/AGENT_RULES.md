@@ -4,15 +4,16 @@
 
 The user prohibits additional SHA-1, SHA-256, checksum and fingerprint checks unless explicitly requested. Do not add such checks in scripts, harnesses or delegated work. Do not compare source_fingerprint, candidate or rubric metadata in the gameplay harness or abort gameplay/evidence writing because the author's contract omits host-owned fields. Copy required provenance from the supplied source commit and rubric; host-owned artifact bookkeeping does not authorize another gate. Remove existing agent-added identity/checksum gates when repairing a harness, preserving its gameplay assertions and historical evidence.
 
-## Current workflow (v38)
+## Current workflow (v42)
 
-New Runs use the latest workflow in the current workspace. Only a single old
-Run explicitly carried forward from the immediately preceding upgrade is
-supported for its actual continuation; other old Runs are retired. The user
-confirmed that all existing migration instances were deleted on 2026-10-06,
-and none is carried into the desktop v38 deployment. Preserved framework source
-archives are not migration instances. Keep historical evidence and frozen
-inputs unchanged.
+New Runs use the latest workflow in the current workspace. Only the single old
+Run explicitly selected and carried by the host is supported for its actual
+continuation, using its frozen source workflow version. A version number alone
+does not establish continuation eligibility. Other old Runs are retired. Preserve
+the original deadline,
+cumulative assignment usage, historical evidence and frozen inputs. An upgrade
+does not grant more budget. Preserved framework source archives are not
+migration instances.
 
 The source behavior path is `behavior_extract → behavior_review →
 behavior_freeze`. The user has confirmed that the original mod works. Read source
@@ -147,7 +148,7 @@ bindings. Original patches and host evidence remain unchanged. Restrictions on
 the planner's diagnostic `.modport` copy do not prohibit this coder handoff.
 The planner has no generic `request_rework` tool; its explicit `resume` decision
 is the repair request for this route. Both dialogue turns describe this capability.
-This prompt correction retains workflow version 40 and the original Run limits.
+This planner repair capability retains the original Run limits.
 
 An explicit continuation of a Run stopped on a pre-agent dependency conflict
 requests a new planner decision in the successor. It preserves the predecessor's
@@ -182,6 +183,85 @@ corrections neither block current execution nor trigger a restart. Original
 budget, deadline, explicit revival/rework decisions and cancellation rules stay
 in force. No additional hash or fingerprint checks are introduced.
 
+### Current candidate integration (v41)
+
+An earlier Git base or artifact digest records provenance; it is not a lock on
+the current workspace. Preserve legal candidate edits before merging coder
+patches. Use isolated Git merges, retain all original task contributions, and
+send actual `integration_merge_required` conflicts to a fresh coder through the
+public SDK under the original Run deadline and remaining assignment budget.
+Archive the conflicting snapshot, paths, original command and patch references.
+The repair coder edits only project files in its isolated copy and cannot execute
+project code, builds or tests. Require its actual returned patch, then dispatch
+the original integration stage again to apply the resolved complete delta to the
+current candidate. New user changes can require another actual merge. Driver
+restart retains the persisted repair task without duplicate dispatch or charges.
+This route covers development, development-preparation, target-repair and
+contract-repair integration. Do not discard user files or advance failed repair,
+missing patches or unsuccessful integration into cleanup, contract freeze or build.
+Keep concrete errors; a diagnostic report does not complete an integration.
+
+An explicit successor archives the predecessor's integration repair state and
+rebinds the remaining integration to fresh SDK execution authority. Reuse a
+completed repair patch instead of charging a second coder assignment. Same-Run
+driver restart retains its already dispatched task. Snapshot inputs ignored by
+Git are merged with their current contents; a later user deletion is an explicit
+delete/modify conflict materialized only in the isolated merge workspace.
+
+A nested coder's explicit rework writes into that exact host-bound caller
+workspace. Keep the original prerequisite patch in the group; the caller exports
+its merged result. Supervisor copies remain diagnostic and cannot impersonate
+this destination. Missing files and invalid task/path bindings retain their raw
+errors. No content checksum or frozen HEAD equality authorizes a merge.
+
+An explicit upgrade from the host-selected carried Run chooses the
+current workflow only for subsequent execution, preserving executed history,
+original deadlines and cumulative usage. Carry a disabled or durably suppressed
+watchdog forward; upgrading must not undo an explicit watchdog stop.
+
+## Interrupted execution and observation recovery (v42)
+
+Optional watchdog observation handles only SQLite BUSY/LOCKED contention by
+retaining raw errors and retrying after a bounded cooldown measured from the
+failed call's return. Already installed watches remain installed. Runtime
+initialization contention explicitly requires the next public Runtime reopen;
+do not claim that observation recovered in the current session. Permanent
+database, identity and authentication errors retain their original error paths.
+Missing observation is unknown, not progress or proof of a stopped process.
+
+After SDK reap/sync, startup and explicit recovery bind the current attempt,
+fence, task, generation and process identity. The registered old driver must be
+independently proved dead in a verifiable PID namespace, and durable SDK evidence
+must confirm its exact worker tree was cleaned. Worker or supervisor exit alone
+does not prove descendant cleanup. Park an uncertain Effect through public SDK
+recovery; never replay an author from a crash symptom. A stopped execution with
+no Effect is recorded as `worker_interrupted`. Preserve logical artifact Run
+provenance separately from current physical SDK Run membership.
+
+A valid supervisor `repair_resume` decision is still required for business repair.
+Exact SDK cancellation authority and independent stopped-tree proof are separate
+from SDK cleanup status; never rewrite cleanup `unknown` as confirmed. Mechanical
+application settlement records failure, unknown external results and unaccepted
+partial artifacts. If a crash left only a settlement note, stronger later cleanup
+proof may complete that same settlement. User cancellation does not authorize
+recovery. All subsequent work retains the original deadline and cumulative budget.
+
+For an interrupted active watchdog supervisor, mechanical cancellation and failed
+diagnostic settlement require that same exact stopped proof and active episode
+binding. Accept no fabricated supervisor decision. The existing 60-second diagnosis
+retry policy owns the next supervisor assignment; this does not restart a business
+author or reset limits. Healthy supervisors, another episode or a stopped watchdog
+do not authorize this route.
+
+Desktop process liveness is separate from SDK scheduling state. Use the driver's
+copied public `runtime.observation_storage` binding for read-only observation;
+`WorkAvailabilityReport.kernel_source` is a path, not a storage source ID. A
+running SDK task can have an exited worker. Missing, inaccessible, stale or
+namespace-uncertain process identities remain unknown. These observations are
+not target acceptance evidence. Short observation limits do not impose an
+absolute subsecond status response or five-second SDK recovery deadline.
+
+
 ## Current planner handoff
 
 Describe each file or related issue group with its source location, problem,
@@ -197,7 +277,7 @@ do not discard an otherwise usable independent test snapshot. Explicit
 `request_rework` remains required for reviewer-directed upstream repairs; coder
 dependency revival uses the separate planner decision described above.
 
-These rules describe current v38 agents and the explicitly supported continuation. In
+These rules describe current v42 agents and the explicitly supported continuation. In
 the current route, exact-version scans and mechanical transforms can run
 immediately after source acquisition. A provisional MDK source compile is diagnostic only: it does
 not certify the original custom build or its dependency classpath. Keep omitted inventory issues
@@ -516,10 +596,11 @@ active gates.
 
 ## Child Run inheritance
 
-Only the v35 Run `artifact-target-protocol-20261004` is carried forward for
-its actual continuation through the v36 upgrade. Preserve its original deadline
-and cumulative assignment usage; its cap of 81 is already applied. All other
-old Runs are retired. Any child Run requires the applicable user
+Only the single host-selected carried Run is supported for its actual continuation
+into the current workflow, retaining its frozen source workflow version. Preserve
+its original deadline and cumulative assignment usage; upgrading does not extend
+its budget. Public distributions contain no private Run selection. All other old
+Runs are retired. Any child Run requires the applicable user
 authorization and a new immutable input set. Source harnesses and source runtime
 results remain historical; target cases are independently designed and freshly
 verified. Do not modify frozen parent evidence or resume a cancelled parent.

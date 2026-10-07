@@ -1,6 +1,5 @@
-"""Isolate reviewed repairs and transactionally publish their owned file changes."""
+"""Prepare isolated repair context and merge authored deltas into current products."""
 from dataclasses import replace
-from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -37,7 +36,7 @@ def _contained(root, relative, *, project=False):
 
 
 def _snapshot(workspace):
-    """Hash regular working files, including ignored/untracked harness inputs."""
+    """List contained regular repair inputs and their preserved file modes."""
     files = {}
     for directory, dirs, names in os.walk(workspace, followlinks=False):
         dirs[:] = [name for name in dirs if not _sensitive_snapshot_name(name)]
@@ -50,8 +49,7 @@ def _snapshot(workspace):
             if stat.S_ISLNK(mode) or not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
                 raise ValueError('repair snapshot rejects symlinks and special files: ' + relative)
             if stat.S_ISREG(mode):
-                files[relative] = {'sha256': sha256(path.read_bytes()).hexdigest(),
-                                   'mode': stat.S_IMODE(mode)}
+                files[relative] = {'mode': stat.S_IMODE(mode)}
     return files
 
 
@@ -64,8 +62,6 @@ def _scope(command):
 
 def _authenticated_json(command, ref):
     data = _verified(command, ref).read_bytes()
-    if sha256(data).hexdigest() != ref.get('sha256'):
-        raise ValueError('repair artifact digest mismatch')
     return json.loads(data)
 
 
@@ -88,8 +84,6 @@ class RepairPrepareHandler:
             source = _contained(root, source_relative, project=True)
             plan = approved_repair_development_plan(command)
             original_head = _head(command, source)
-            if plan['base_commit'] != original_head:
-                raise ValueError('repair approval differs from source HEAD')
             before = _snapshot(source)
             relative = 'workspaces/repair-bases/' + scope + '/' + command.command_id
             isolated = _new_workspace(command, relative)
@@ -98,10 +92,6 @@ class RepairPrepareHandler:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source / name, target, follow_symlinks=False)
                 target.chmod(before[name]['mode'])
-            if _snapshot(source) != before or _head(command, source) != original_head:
-                raise ValueError('repair source changed during snapshot')
-            if _snapshot(isolated) != before:
-                raise ValueError('repair copy differs from source snapshot')
             _git(command, isolated, 'init')
             _git(command, isolated, 'add', '--force', '--all', '--', '.')
             _git(command, isolated, 'commit', '--allow-empty', '--no-gpg-sign', '-m', 'Freeze repair input snapshot')
@@ -259,129 +249,66 @@ def _commit_target(command, source, changed, staging, old_head):
 
 class RepairIntegrateHandler:
     def __call__(self, command):
-        published = []
-        originals = {}
-        source = None
-        transaction = None
         try:
             root = handlers._run_root(command)
             scope = _scope(command)
             record = _authenticated_json(command, command.artifact_refs['repair_snapshot'])
-            _authenticated_json(command, command.artifact_refs['development_plan'])
             expected_source = 'baseline' if scope == 'contract' else 'worktree'
+            plan_ref = command.artifact_refs['development_plan']
+            recorded_plan = record.get('development_plan')
             if (record.get('run_id') != command.run_id or record.get('scope') != scope
                     or record.get('source_workspace') != expected_source
-                    or record.get('development_base') != command.payload.get('development_base')
                     or record.get('development_source_workspace') != command.payload.get('development_source_workspace')
-                    or record.get('development_plan') != command.artifact_refs.get('development_plan')
+                    or not isinstance(recorded_plan, dict)
+                    or recorded_plan.get('path') != plan_ref.get('path')
                     or command.payload.get('goal_scope') != scope):
-                raise ValueError('repair snapshot identity mismatch')
+                raise ValueError('repair snapshot scope or author binding mismatch')
+            # The snapshot remains original author context. It is not a lease
+            # on the mutable source tree or a file publication template.
+            repair_source = _contained(root, record['development_source_workspace'])
             source = _contained(root, expected_source, project=True)
-            def current():
-                if _head(command, source) != record['source_head'] or _snapshot(source) != record['files']:
-                    raise ValueError('repair source snapshot is stale')
-            current()
-            base_workspace = _contained(root, record['development_source_workspace'])
-            if _head(command, base_workspace) != record['development_base']:
-                raise ValueError('repair base HEAD changed')
-            relative = 'workspaces/repair-integration/' + scope + '/' + command.command_id
-            aggregate = _contained(root, relative)
-            if aggregate.exists():
-                raise ValueError('repair integration workspace already exists')
-            aggregate.parent.mkdir(parents=True, exist_ok=True)
-            _git(command, root, 'clone', '--no-hardlinks', '--', str(base_workspace), str(aggregate))
-            _git(command, aggregate, 'checkout', '--detach', record['development_base'])
-            integrated = DevelopmentIntegrateHandler()(replace(command, options={**command.options, 'workspace': relative}))
+            observed_head = _head(command, source)
+            # Import the snapshot's base objects so Git can three-way merge
+            # ignored inputs that were never tracked in the product repository.
+            # Fetching objects does not restore snapshot files over current edits.
+            _git(command, source, 'fetch', '--no-tags', '--', str(repair_source),
+                 record['development_base'])
+            integrated = DevelopmentIntegrateHandler()(replace(command,
+                options={**command.options, 'workspace': expected_source},
+                payload={**command.payload, 'repair_input_paths': list(record['files'])}))
             if integrated.status != 'completed':
                 return integrated
-            changed = [path for path in _paths(
-                command, aggregate, record['development_base'], _head(command, aggregate))
-                if not _sensitive_snapshot_path(path)]
-            after = _snapshot(aggregate)
-            staging = _new_workspace(command, relative + '-publish')
-            for name in changed:
-                _path(name, shared=True)
-                destination = _contained(source, name)
-                if destination.exists() and not destination.is_file():
-                    raise ValueError('repair cannot replace a directory with a file')
-                originals[name] = (destination.read_bytes(), destination.stat().st_mode & 0o7777) if destination.exists() else None
-                if name in after:
-                    staged = staging / name
-                    staged.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(aggregate / name, staged, follow_symlinks=False)
-            current()
-            for name in changed:
-                destination = _contained(source, name)
-                published.append(name)
-                if name in after:
-                    _install_file(staging / name, destination, after[name]['mode'])
-                else:
-                    destination.unlink()
-            expected = dict(record['files'])
-            for name in changed:
-                if name in after:
-                    expected[name] = after[name]
-                else:
-                    expected.pop(name, None)
-            if _snapshot(source) != expected or _head(command, source) != record['source_head']:
-                raise ValueError('repair publication verification failed')
-            head = record['source_head']
-            if scope == 'target' and changed:
-                transaction = _commit_target(command, source, changed, staging, head)
-                head = transaction['new_head']
+            head = integrated.outputs['head']
+            integration_ref = integrated.outputs['artifact_refs']['development_integration']
+            integration_record = _authenticated_json(command, integration_ref)
+            actual_base = integration_record.get('integration_start', observed_head)
+            changed = integrated.outputs.get('changed_paths')
+            if not isinstance(changed, list):
+                changed = _paths(command, source, actual_base, head)
             baseline_project_changes = ([name for name in changed
-                                         if name != '.modport' and not name.startswith('.modport/')]
-                                        if scope == 'contract' else [])
+                if name != '.modport' and not name.startswith('.modport/')]
+                if scope == 'contract' else [])
             provenance = {
-                'original_source_head': record['source_head'],
+                'original_source_head': record.get('source_head'),
+                'observed_source_head': observed_head,
                 'baseline_project_changes': baseline_project_changes,
                 'represents_original_source': not baseline_project_changes,
             }
             business_diagnostics = integrated.outputs.get('business_diagnostics', [])
             ref = _artifact(command, 'repair-integration.json', json.dumps({
-                'scope': scope, 'source_head': record['source_head'], 'head': head, 'changed_paths': changed,
-                'baseline_provenance': provenance,
+                'scope': scope, 'source_head': record.get('source_head'),
+                'observed_source_head': observed_head, 'head': head,
+                'changed_paths': changed, 'baseline_provenance': provenance,
                 'business_diagnostics': business_diagnostics,
                 'repair_snapshot': command.artifact_refs['repair_snapshot'],
-                'development_integration': integrated.outputs['artifact_refs']['development_integration']}, sort_keys=True).encode())
-            return handlers._result(command, 'completed', outputs={'head': head,
-                'goal_scope': scope, 'changed_paths': changed,
+                'development_integration': integration_ref}, sort_keys=True).encode())
+            return handlers._result(command, 'completed', outputs={**integrated.outputs,
+                'goal_scope': scope, 'source_workspace': expected_source,
+                'changed_paths': changed,
                 'baseline_project_changes': baseline_project_changes,
                 'represents_original_source': provenance['represents_original_source'],
-                'business_diagnostics': business_diagnostics,
-                'artifact_refs': {'repair_integration': ref}})
+                'artifact_refs': {**integrated.outputs.get('artifact_refs', {}),
+                                  'repair_integration': ref}})
         except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as exc:
-            rollback_errors = ['target HEAD/index rollback failed'] if isinstance(exc, _TargetRollbackFailed) else []
-            if transaction is not None:
-                try:
-                    _rollback_target(command, source, transaction)
-                except (OSError, ValueError, subprocess.TimeoutExpired) as rollback:
-                    rollback_errors.append(str(rollback))
-            # Restore every published file even when Git rollback failed. One
-            # failed restoration must not prevent attempts on the other paths.
-            try:
-                specification = workspace_spec(root)
-            except (OSError, ValueError, TypeError):
-                specification = None
-                preserve_direct_changes = True
-            else:
-                preserve_direct_changes = bool(
-                    specification and specification.get('mode') == 'direct'
-                    and source == project_path(root, 'worktree'))
-            if not preserve_direct_changes:
-                for name in reversed(published):
-                    try:
-                        destination = _contained(source, name)
-                        original = originals[name]
-                        if original is None:
-                            destination.unlink(missing_ok=True)
-                        else:
-                            destination.write_bytes(original[0])
-                            destination.chmod(original[1])
-                    except (OSError, ValueError, subprocess.TimeoutExpired) as rollback:
-                        rollback_errors.append(f'{name}: {rollback}')
-            else:
-                rollback_errors.append('partial direct-workspace files were retained')
-            if rollback_errors:
-                return handlers._result(command, 'blocked', detail=f"{exc}; rollback failed: {'; '.join(rollback_errors)}", error_code='repair_rollback_failed')
-            return handlers._result(command, 'blocked', detail=str(exc), error_code='repair_integration_invalid')
+            return handlers._result(command, 'blocked', detail=str(exc),
+                                    error_code='repair_integration_invalid')

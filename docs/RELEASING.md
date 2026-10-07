@@ -8,7 +8,9 @@
 
 公开源码地址为 [FlightDan/ModPort](https://github.com/FlightDan/ModPort)，默认
 分支为 `V1.0.0`。Python 与桌面版本均为 `1.0.0`，对应正式版标签 `v1.0.0`；
-工作流版本独立，当前内嵌 workflow 40。
+工作流版本独立，当前内嵌 workflow 42。本次在保留 `1.0.0` 应用版本的情况下
+更新公开源码、正式版标签与全部下载包；原 `1.0.0` 用户需重新下载，版本
+检查不会将同版本覆盖识别为升级。
 `dispatcher-sdk==0.7.1` 已在[官方 release](https://github.com/FlightDan/dispatcher-sdk/releases/tag/v0.7.1)
 发布 wheel 和 source distribution。本工作区将原始 release assets 放在
 `build/sdk-release/0.7.1/`，并将 sdist 解压到 `dispatcher-sdk/`，保留 Apache

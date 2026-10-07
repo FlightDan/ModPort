@@ -4,7 +4,7 @@ from .contracts import FORMAT_VERSION
 from .evidence import digest
 from .models import MigrationRequest
 
-WORKFLOW_VERSION = 40
+WORKFLOW_VERSION = 42
 DEFAULT_AGENT_MODEL = "gpt-6-luna"
 DEFAULT_REASONING_EFFORT = "max"
 PLANNER_MODEL = "gpt-6.1-sol"
@@ -570,6 +570,13 @@ class WorkflowDefinition:
             result['final_cleanup_policy'] = {'enabled': True, 'once_per_run': True,
                 'entry': 'initial_target_acceptance', 'revalidation': 'all_frozen_target_tests',
                 'independent_review': True, 'redesign_tests': False}
+        if self.version >= 41:
+            result['integration_policy'] = {
+                'current_candidate_merge': True,
+                'actual_conflict_repair': 'coder',
+                'preserve_executed_history': True,
+                'frozen_head_gate': False,
+            }
         return result
 
     def sha256(self):
