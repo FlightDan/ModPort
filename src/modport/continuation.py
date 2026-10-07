@@ -1357,7 +1357,8 @@ def continue_from_planner(operations, run_dir, run_id, *, next_run_id, reason,
                                 activate=False, dependencies=[],
                                 causation_id=causation_id))
                     if any(op["kind"] == "finish" for op in schedules):
-                        raise ValueError("remaining assignment budget cannot start continuation")
+                        reason = app.get("terminal_reason") or app.get("stop_reason") or "no_runnable_work"
+                        raise ValueError("continuation cannot start: " + str(reason))
                     stored_app = pack_application_state(root, app)
                     # Bind the exact compact state and initial SDK operations
                     # into the successor's immutable Run input. The header is
