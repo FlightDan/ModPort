@@ -19,7 +19,7 @@ class CurrentWorkflowUpgradeTests(unittest.TestCase):
         self.selection.start()
         self.addCleanup(self.selection.stop)
 
-    def header(self, version=40):
+    def header(self, version=workflow_upgrade.UPGRADE_SOURCE_WORKFLOW_VERSION):
         request = MigrationRequest('fixture', 'https://example.invalid/fixture.git',
             '1.21', '26.1', source_loader='neoforge', budget=Budget(max_seconds=86400))
         return {'run_id': TEST_PREDECESSOR_RUN_ID, 'request': request.to_dict(),

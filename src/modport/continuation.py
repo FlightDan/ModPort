@@ -809,14 +809,14 @@ def _reconsider_dependency_stop(state, app):
         hold['status'] = 'needs_plan'
 
 
-def _retained_integration_command(root, state, stage):
-    """Resolve the settled integration selected by its retained host result."""
+def _retained_result_command(root, state, source_result):
+    """Resolve one settled producer through the current SDK or host catalog."""
     from .json_catalog import iter_catalog
     root = Path(root)
-    source_result = (state.get('application_state') or {}).get('effective', {}).get(stage)
     if not isinstance(source_result, dict) or not isinstance(source_result.get('command_id'), str):
-        raise ValueError('requested integration has no retained execution identity')
+        raise ValueError('requested producer has no retained execution identity')
     execution_id = source_result['command_id']
+    stage = source_result.get('stage_id')
     original = None
     for task in state.get('tasks', {}).values():
         for attempt in task.get('attempts', []):
@@ -828,36 +828,123 @@ def _retained_integration_command(root, state, stage):
         header = state.get('input') or {}
         ref = header.get('continuation', {}).get('support_refs', {}).get('continuation:rework_sources')
         if not isinstance(ref, dict):
-            raise ValueError('requested integration SDK command is not retained')
+            raise ValueError('requested producer SDK command is not retained')
         metadata = ref.get('metadata', {})
         if (header.get('run_id') != state['run_id']
                 or metadata.get('next_run_id') != state['run_id']
                 or ref.get('path') != 'artifacts/continuations/' + state['run_id'] + '/rework-sources.json'):
-            raise ValueError('integration source catalog identifies another execution segment')
+            raise ValueError('producer source catalog identifies another execution segment')
         # Select this one host-bound descriptor. The existing storage decoder
         # handles packed inputs; no new checksum or content identity is added.
         for kind, name, row in iter_catalog(verified_path(root, ref)):
             if kind != 'source' or row.get('execution_id') != execution_id:
                 continue
             if row.get('terminal_state') not in _SETTLED or row.get('stage_id') != stage:
-                raise ValueError('requested integration catalog entry is not a settled integration')
+                raise ValueError('requested producer catalog entry is not a settled matching stage')
             candidate = OperationInput.from_dict(unpack_input(root, row['operation']))
             if (row.get('task_id') != candidate.task_id or row.get('target_agent') != candidate.task_id
                     or row.get('execution_id') != candidate.command_id or row.get('stage_id') != candidate.stage_id):
-                raise ValueError('requested integration catalog operation identity differs')
+                raise ValueError('requested producer catalog operation identity differs')
             if original is not None:
-                raise ValueError('requested integration has duplicate retained execution descriptors')
+                raise ValueError('requested producer has duplicate retained execution descriptors')
             original = candidate
     if original is None:
-        raise ValueError('requested integration SDK command is not retained')
+        raise ValueError('requested producer SDK command is not retained')
     if original.stage_id != stage or original.command_id != execution_id or Path(original.run_dir) != root:
-        raise ValueError('requested integration SDK command belongs to another boundary')
+        raise ValueError('requested producer SDK command belongs to another boundary')
     OperationResult.from_dict(source_result).validate_for(original)
     return original
 
 
+def _retained_integration_command(root, state, stage):
+    """Resolve the settled integration selected by its retained host result."""
+    source_result = (state.get('application_state') or {}).get('effective', {}).get(stage)
+    if not isinstance(source_result, dict) or source_result.get('stage_id') != stage:
+        raise ValueError('requested integration has no retained execution identity')
+    return _retained_result_command(root, state, source_result)
+
+
+def _restore_replay_coder_results(root, state, replay):
+    """Recover complete authors when a retained join selected a child delta."""
+    selected_results = replay['payload'].get('development_results')
+    if not isinstance(selected_results, list):
+        return
+    restored, rebindings = [], []
+    for selected in selected_results:
+        result = selected
+        if isinstance(result, dict) and result.get('stage_id') == 'agent_rework':
+            execution_id = result.get('command_id')
+            child = _retained_result_command(root, state, result)
+            request = child.payload.get('reviewer_rework')
+            original_raw = child.payload.get('rework_original_command')
+            if not isinstance(request, dict) or not isinstance(original_raw, dict):
+                raise ValueError('integration replay child lacks its bound original author')
+            original = OperationInput.from_dict(original_raw)
+            if (request.get('source_execution_id') != original.command_id
+                    or request.get('target_agent') != original.task_id
+                    or original.run_id != child.run_id or original.run_dir != child.run_dir
+                    or original.stage_id != 'coder'):
+                raise ValueError('integration replay child original author identity differs')
+            matches = [value for value in child.upstream_results.values()
+                       if isinstance(value, dict)
+                       and value.get('command_id') == original.command_id]
+            if not matches or any(value != matches[0] for value in matches[1:]):
+                raise ValueError('integration replay original author result is missing or conflicting')
+            source = OperationResult.from_dict(matches[0])
+            source.validate_for(original)
+            task = original.payload.get('development_task')
+            if (not isinstance(task, dict)
+                    or source.outputs.get('development_task_id') != task.get('id')
+                    or source.outputs.get('development_task_id') != result.get(
+                        'outputs', {}).get('development_task_id')):
+                raise ValueError('integration replay original author task binding differs')
+            rebindings.append({'selected_execution_id': execution_id,
+                               'original_execution_id': source.command_id,
+                               'development_task_id': task['id']})
+            result = source.to_dict()
+        restored.append(json_copy(result))
+    if rebindings:
+        replay['payload']['development_results'] = restored
+        replay['payload']['integration_replay_rebindings'] = rebindings
+
+
+def _unfinished_integration_before(state, start_stage):
+    """Select the latest relevant candidate boundary, never stale history."""
+    if not isinstance(start_stage, str):
+        return None
+    from .integration_repair import INTEGRATION_STAGES
+    from .workflow import stage_routes
+    header = state.get('input') or {}
+    if header.get('request', {}).get('workflow_mode', 'migration') != 'migration':
+        return None
+    routes = stage_routes(header)[2]
+    effective = (state.get('application_state') or {}).get('effective', {})
+    candidates = {}
+    for stage in INTEGRATION_STAGES:
+        result = effective.get(stage)
+        if (not isinstance(result, dict) or result.get('stage_id') != stage
+                or not isinstance(result.get('command_id'), str)):
+            continue
+        successor, seen = routes.get(stage), {stage}
+        while successor is not None and successor not in seen:
+            if successor == start_stage:
+                candidates[result['command_id']] = result
+                break
+            seen.add(successor)
+            successor = routes.get(successor)
+    history = (state.get('application_state') or {}).get('history', [])
+    for row in reversed(history):
+        result = candidates.get(row.get('execution_id'))
+        if result is not None:
+            return result['stage_id'] if result.get('status') != 'completed' else None
+    if len(candidates) == 1:
+        result = next(iter(candidates.values()))
+        return result['stage_id'] if result.get('status') != 'completed' else None
+    return None
+
+
 def _prepare_integration_replay(root, state, app, stage, *, resolution=None):
-    """Retain the exact settled integration input selected by the host history."""
+    """Rebind the selected join while preserving its frozen predecessor input."""
     root = Path(root)
     original = _retained_integration_command(root, state, stage)
     execution_id = original.command_id
@@ -865,6 +952,7 @@ def _prepare_integration_replay(root, state, app, stage, *, resolution=None):
     if path.resolve() != path.absolute():
         raise ValueError('integration replay input must not traverse symlinks')
     replay = original.to_dict()
+    _restore_replay_coder_results(root, state, replay)
     if resolution is not None:
         replay['payload']['integration_resolution'] = json_copy(resolution)
     atomic_json(path, replay)
@@ -1010,8 +1098,14 @@ def prepare_application(root, state, *, start_stage=None,
             }
         _prepare_required_target_restart(root, state, app, start_stage)
         rebound_integration = _prepare_integration_successor(root, state, app)
-        if start_stage in INTEGRATION_STAGES and not rebound_integration:
-            _prepare_integration_replay(root, state, app, start_stage)
+        if not rebound_integration:
+            resume = app['flowthrough_resume']
+            consumer_stage = (start_stage if start_stage is not None else
+                              resume.get('next_stage') or resume.get('stage'))
+            replay_stage = (consumer_stage if consumer_stage in INTEGRATION_STAGES else
+                            _unfinished_integration_before(state, consumer_stage))
+            if replay_stage is not None:
+                _prepare_integration_replay(root, state, app, replay_stage)
         if target_workflow_version >= 40 and start_stage is None:
             _reconsider_dependency_stop(state, app)
         app["acceptance_status"] = "unverified"

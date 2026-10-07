@@ -119,6 +119,74 @@ class IntegrationContinuationTests(unittest.TestCase):
         self.assertEqual('sdk_execution_identity_invalid',
                          app['integration_repair_history'][-1]['error_code'])
 
+    def later_contract_failure(self):
+        later = replace(self.original, task_id='target_contract_freeze',
+                        stage_id='target_contract_freeze',
+                        command_id='previous:target_contract_freeze:1', payload={})
+        failure = OperationResult('failed', later.run_id, later.task_id, later.stage_id,
+                                  later.command_id, error_code='target_contract_invalid',
+                                  detail='worktree/.modport/functional-contract.json is missing')
+        self.snapshot['tasks'][later.task_id] = {'attempts': [{'state': 'succeeded',
+            'command': {'execution_id': later.command_id, 'payload': later.to_dict()},
+            'result': {'value': failure.to_dict()}}]}
+        self.app['effective'][later.stage_id] = failure.to_dict()
+        self.app['history'].append({'execution_id': later.command_id})
+
+    def test_downstream_continuation_revisits_unrepaired_failed_integration(self):
+        self.app.pop('integration_repair')
+        self.later_contract_failure()
+        for stage in ('code_cleanup', 'target_contract_freeze', 'target_build'):
+            with self.subTest(start_stage=stage):
+                app, command = self.prepare_and_schedule(start_stage=stage)
+                self.assertEqual('development_integrate', command.stage_id)
+                self.assertEqual(self.original.payload['development_results'],
+                                 command.payload['development_results'])
+                self.assertEqual(4, app['agent_assignments'])
+
+    def test_default_continuation_revisits_integration_before_failed_consumer(self):
+        self.app.pop('integration_repair')
+        self.later_contract_failure()
+        app, command = self.prepare_and_schedule()
+        self.assertEqual('development_integrate', command.stage_id)
+        self.assertEqual(self.original.payload['development_results'],
+                         command.payload['development_results'])
+        self.assertEqual(4, app['agent_assignments'])
+
+    def test_blocked_repair_integration_is_revisited_before_its_consumer(self):
+        self.app.pop('integration_repair')
+        repair = replace(self.original, task_id='target_repair_integrate',
+                         stage_id='target_repair_integrate',
+                         command_id='previous:target_repair_integrate:1')
+        blocked = OperationResult('blocked', repair.run_id, repair.task_id, repair.stage_id,
+                                  repair.command_id, error_code='repair_integration_invalid',
+                                  detail='selected repair workspace is missing')
+        self.snapshot['tasks'][repair.task_id] = {'attempts': [{'state': 'succeeded',
+            'command': {'execution_id': repair.command_id, 'payload': repair.to_dict()},
+            'result': {'value': blocked.to_dict()}}]}
+        self.app['effective'][repair.stage_id] = blocked.to_dict()
+        self.app['history'].append({'execution_id': repair.command_id})
+        self.later_contract_failure()
+        for stage in (None, 'target_contract_freeze'):
+            with self.subTest(start_stage=stage):
+                app, command = self.prepare_and_schedule(start_stage=stage)
+                self.assertEqual('target_repair_integrate', command.stage_id)
+                self.assertEqual(blocked.to_dict(), self.app['effective'][repair.stage_id])
+                self.assertEqual(4, app['agent_assignments'])
+
+    def test_later_completed_candidate_prevents_replay_of_old_failed_integration(self):
+        self.app.pop('integration_repair')
+        completed = replace(self.original, task_id='target_repair_integrate',
+                            stage_id='target_repair_integrate',
+                            command_id='previous:target_repair_integrate:1')
+        result = OperationResult('completed', completed.run_id, completed.task_id,
+            completed.stage_id, completed.command_id, outputs={'head': 'd' * 40})
+        self.app['effective'][completed.stage_id] = result.to_dict()
+        self.app['history'].append({'execution_id': completed.command_id})
+        self.later_contract_failure()
+        app, command = self.prepare_and_schedule(start_stage='target_contract_freeze')
+        self.assertEqual('target_contract_freeze', command.stage_id)
+        self.assertNotIn('integration_replay', app)
+
     def successful_coder(self):
         patch = {'path': 'resolved.patch'}
         (self.root / patch['path']).write_text('retained successful coder delta\n')

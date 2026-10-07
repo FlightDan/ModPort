@@ -4,7 +4,7 @@ from .contracts import FORMAT_VERSION
 from .evidence import digest
 from .models import MigrationRequest
 
-WORKFLOW_VERSION = 42
+WORKFLOW_VERSION = 43
 DEFAULT_AGENT_MODEL = "gpt-6-luna"
 DEFAULT_REASONING_EFFORT = "max"
 PLANNER_MODEL = "gpt-6.1-sol"

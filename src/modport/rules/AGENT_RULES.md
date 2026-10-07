@@ -4,7 +4,7 @@
 
 The user prohibits additional SHA-1, SHA-256, checksum and fingerprint checks unless explicitly requested. Do not add such checks in scripts, harnesses or delegated work. Do not compare source_fingerprint, candidate or rubric metadata in the gameplay harness or abort gameplay/evidence writing because the author's contract omits host-owned fields. Copy required provenance from the supplied source commit and rubric; host-owned artifact bookkeeping does not authorize another gate. Remove existing agent-added identity/checksum gates when repairing a harness, preserving its gameplay assertions and historical evidence.
 
-## Current workflow (v42)
+## Current workflow (v43)
 
 New Runs use the latest workflow in the current workspace. Only the single old
 Run explicitly selected and carried by the host is supported for its actual
@@ -60,6 +60,20 @@ behavior, tests, contracts and acceptance checks. A cleanup failure remains a
 diagnostic and does not gate verification. Only an explicit
 `request_rework` starts author work; reviewer-requested rework of `code_cleanup`
 is followed by a fresh `target_build`.
+
+## Explicit continuation and complete integration inputs (v43)
+
+A default continuation or an explicit restart into cleanup, target contract
+freeze or a later dependent stage first restores any unresolved integration on
+that path, including failed and blocked outcomes. A later completed integration
+supersedes obsolete failures. Retained rework inputs
+bind the complete original coder result; a narrow child correction never
+substitutes for that original contribution. Rebinding belongs only in the new
+replay input and its diagnostic record. Preserve historical commands and results.
+Merge complete contributions with later main-workspace corrections through the
+existing integration and conflict-repair route. Do not manufacture a missing
+contract or copy one file from an unrelated candidate to bypass integration.
+Preserve the original deadline and cumulative assignment usage throughout.
 
 ## Final cleanup and coder readability (v37)
 
@@ -277,7 +291,7 @@ do not discard an otherwise usable independent test snapshot. Explicit
 `request_rework` remains required for reviewer-directed upstream repairs; coder
 dependency revival uses the separate planner decision described above.
 
-These rules describe current v42 agents and the explicitly supported continuation. In
+These rules describe current v43 agents and the explicitly supported continuation. In
 the current route, exact-version scans and mechanical transforms can run
 immediately after source acquisition. A provisional MDK source compile is diagnostic only: it does
 not certify the original custom build or its dependency classpath. Keep omitted inventory issues

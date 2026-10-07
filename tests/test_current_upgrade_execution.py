@@ -33,12 +33,13 @@ class CurrentUpgradeExecutionTests(unittest.TestCase):
     def test_public_sdk_upgrade_preserves_history_deadline_workspace_and_watchdog_stop(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            previous_id = 'carried-40'
-            successor_id = 'current-41'
+            previous_id = 'selected-predecessor'
+            successor_id = 'current-successor'
             request = MigrationRequest('fixture', 'https://example.invalid/fixture.git',
                 '1.20.1', '26.1.2', budget=Budget(max_seconds=3600, max_agent_assignments=30)).to_dict()
             request.pop('wiki_enabled')
-            definition = WorkflowDefinition(request, version=40).to_dict()
+            definition = WorkflowDefinition(request,
+                version=workflow_upgrade.UPGRADE_SOURCE_WORKFLOW_VERSION).to_dict()
             handlers = {row['handler_id']: PrepareOnlyHandler() for row in definition['stages']}
             owner = MigrationOperations(handlers=handlers, isolation_mode='thread',
                 memory_probe=lambda: MemorySnapshot(64 * 1024**3, 64 * 1024**3, 'test capacity'))
@@ -78,7 +79,8 @@ class CurrentUpgradeExecutionTests(unittest.TestCase):
                     reason='User-authorized current workflow after merge repair', upgrade_workflow=True)
             current = successor.snapshot['input']
             self.assertEqual(WORKFLOW_VERSION, current['definition']['workflow_version'])
-            self.assertEqual(40, current['workflow_upgrade']['from_version'])
+            self.assertEqual(workflow_upgrade.UPGRADE_SOURCE_WORKFLOW_VERSION,
+                             current['workflow_upgrade']['from_version'])
             self.assertEqual(WORKFLOW_VERSION, current['workflow_upgrade']['to_version'])
             self.assertEqual(header['deadline_epoch'], current['deadline_epoch'])
             self.assertEqual(header['request']['budget'], current['request']['budget'])
