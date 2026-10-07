@@ -27,5 +27,5 @@ ModPort 接受针对代码和文档的改进。提交前请确认你有权提供
 本机运行目录、凭据或第三方私有项目。
 
 通过 [GitHub Issues](https://github.com/FlightDan/ModPort/issues) 报告问题，或向
-`V1.0.0` 默认分支提交 Pull Request。迁移研究知识的贡献流程见
+`main` 默认分支提交 Pull Request。迁移研究知识的贡献流程见
 [Wiki 知识与集成说明](docs/WIKI_KNOWLEDGE.md)。

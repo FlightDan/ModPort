@@ -7,7 +7,7 @@
 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
 
 公开源码地址为 [FlightDan/ModPort](https://github.com/FlightDan/ModPort)，默认
-分支为 `V1.0.0`。Python 与桌面版本均为 `1.0.0`，对应正式版标签 `v1.0.0`；
+分支为 `main`。Python 与桌面版本均为 `1.0.0`，对应正式版标签 `v1.0.0`；
 工作流版本独立，当前内嵌 workflow 42。本次在保留 `1.0.0` 应用版本的情况下
 更新公开源码、正式版标签与全部下载包；原 `1.0.0` 用户需重新下载，版本
 检查不会将同版本覆盖识别为升级。
@@ -16,6 +16,16 @@
 `build/sdk-release/0.7.1/`，并将 sdist 解压到 `dispatcher-sdk/`，保留 Apache
 LICENSE 与 NOTICE。有限范围的 Linux SDK 集成检查已通过；完整真实 Hyperbox 与原生 Windows 验收仍未完成，不能报告为通过。
 独立 ModPort 源码包和 wheel 不含 SDK；桌面包组装会携带对应 SDK 源码。
+
+## 分支与版本约定
+
+- `main` 是默认开发分支，Pull Request 默认合并到这里；主分支不使用应用版本号命名。
+- 正式发布使用小写 `v` 前缀的 Tag，例如 `v1.0.0`，标记对应的发布提交。
+- GitHub Release 关联该 Tag，提供发布说明和该版本的下载包。后续发布创建新的版本 Tag 和 Release。
+- 只有需要并行维护旧版本时才创建 `release/1.x` 等维护分支；常规发布无需另建版本分支。
+
+分支改名不移动已有版本 Tag，也不替换已有 Release 下载包。Python 包与桌面应用
+仍在各自元数据中保留版本号，工作流版本独立管理。
 
 ## 公开源码与本地数据
 
@@ -80,7 +90,7 @@ python3 -m venv .venv
 | `python-linux.tar.gz` | [python-build-standalone](https://github.com/astral-sh/python-build-standalone/releases)，Python 3.13.16 x64，解压后为 `python/`，保留全部运行时许可文件 |
 
 记录实际采用的 Python 补丁版本和运行时发布来源后再公开二进制；不能仅
-根据本地通用文件名断言下载内容的版本。V1.0.0 复用已准备的官方运行时：
+根据本地通用文件名断言下载内容的版本。1.0.0 版本复用已准备的官方运行时：
 Electron 压缩包的版本文件为 44.5.1；Linux Python 的 `patchlevel.h` 为
 3.13.16；Windows Python DLL 的 FileVersion/ProductVersion 为 3.13.12。
 Linux Python 的原始下载标签未保留，故仅记录上游发布来源与实际补丁版本，
