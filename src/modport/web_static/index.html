@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>ModPort · 迁移进度</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/graph.js" defer></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#"
+        ><span class="brand-mark" aria-hidden="true">M</span> ModPort
+        <span class="brand-caption">迁移进度</span></a
+      ><button id="logout" hidden>退出登录</button>
+    </header>
+    <main>
+      <section id="login" class="login-card" hidden>
+        <div class="eyebrow">MODPORT</div>
+        <h1>查看迁移进度</h1>
+        <p class="muted">输入共享密码，查看运行状态和每一步的摘要。</p>
+        <form id="login-form">
+          <label for="password">共享密码</label>
+          <div class="password-field"><input
+            id="password"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            autocapitalize="none"
+            autocorrect="off"
+            spellcheck="false"
+            required
+            maxlength="4096"
+          /><button id="toggle-password" type="button" aria-label="显示密码" aria-pressed="false" aria-controls="password">显示</button></div>
+          <button class="primary" type="submit">登录</button>
+          <p id="login-error" class="error" role="alert"></p>
+        </form>
+      </section>
+      <div id="workspace" hidden>
+        <div class="page-heading">
+          <div>
+            <div class="eyebrow">迁移工作台</div>
+            <h1 id="page-title">全部运行</h1>
+          </div>
+          <div class="refresh">
+            <span id="freshness" role="status">正在读取进度…</span
+            ><button id="refresh">立即刷新</button>
+          </div>
+        </div>
+        <p id="notice" class="notice" role="status" hidden></p>
+        <section id="run-list" aria-label="迁移运行"></section>
+        <section id="run-detail" hidden>
+          <a href="#" class="back">← 全部运行</a>
+          <div id="run-overview"></div>
+          <div class="workflow-layout">
+            <div id="stages" aria-label="迁移阶段"></div>
+            <aside id="step-panel" aria-label="步骤摘要">
+              <p class="muted">点击任一步骤查看摘要。</p>
+            </aside>
+          </div>
+        </section>
+      </div>
+      <p id="initial-loading" class="muted">正在连接…</p>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "default": {"model": "gpt-6-luna", "reasoning_effort": "max"},
+  "roles": {
+    "planner": {"model": "gpt-6-astra", "reasoning_effort": "high"},
+    "coder": {"model": "gpt-6.1-sol", "reasoning_effort": "high"},
+    "supervisor": {"model": "gpt-6-luna", "reasoning_effort": "max"},
+    "contract_review": {"model": "gpt-6.1-sol", "reasoning_effort": "high"},
+    "summary": {"model": "gpt-6-luna", "reasoning_effort": "max"}
+  },
+  "stages": {}
+}

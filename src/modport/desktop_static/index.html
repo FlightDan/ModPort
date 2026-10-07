@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>ModPort</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="en.js" defer></script>
+  <script src="i18n.js" defer></script>
+  <script src="model_setup.js" defer></script>
+  <script src="fallback_setup.js" defer></script>
+  <script src="wiki_contributions.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main"><span data-i18n="跳到主要内容">跳到主要内容</span></a>
+  <div class="app-shell">
+    <header class="app-header">
+      <a class="brand" href="#project" aria-label="ModPort 项目首页" data-i18n-aria-label="ModPort 项目首页"><span class="brand-mark" aria-hidden="true">M<span>↗</span></span><span>ModPort<small>MOD MIGRATION WORKSPACE</small></span></a>
+      <nav aria-label="迁移步骤" class="steps" data-i18n-aria-label="迁移步骤">
+        <button type="button" data-screen="project" aria-current="step"><span>01</span> <span data-i18n="项目">项目</span></button>
+        <button type="button" data-screen="settings"><span>02</span> <span data-i18n="设置">设置</span></button>
+        <button type="button" data-screen="run"><span>03</span> <span data-i18n="执行">执行</span></button>
+      </nav>
+      <div class="header-actions"><button id="wiki-contributions-button" type="button" aria-haspopup="dialog" aria-controls="wiki-contributions-dialog"><span data-i18n="研究贡献">研究贡献</span></button><label class="language-picker"><svg class="language-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 5h12M9 2v3M5 5c0 6 5 10 9 11M13 5c0 6-5 10-10 12M14 21l4-11 4 11M15.5 17h5"/></svg><select id="language-select" aria-label="语言" data-i18n-aria-label="语言"><option value="zh-CN">简体中文</option><option value="en">English</option></select></label><button id="model-settings-button" type="button" aria-haspopup="dialog" disabled><span data-i18n="配置模型">配置模型</span></button><button id="environment-button" type="button" class="environment-button"><span class="status-dot" aria-hidden="true"></span><span id="environment-label"><span data-i18n="正在连接">正在连接</span></span></button></div>
+    </header>
+    <div id="feedback" class="feedback" role="status" aria-live="polite" hidden></div>
+    <main id="main" tabindex="-1">
+      <section id="project-screen" class="screen setup-screen" aria-labelledby="project-heading">
+        <div class="page-heading"><div><p class="eyebrow"><span data-i18n="NEW MIGRATION / 新建迁移">NEW MIGRATION / 新建迁移</span></p><h1 id="project-heading"><span data-i18n="从项目开始。">从项目开始。</span></h1><p><span data-i18n="选择源代码，确认版本，再交给 ModPort。">选择源代码，确认版本，再交给 ModPort。</span></p></div><span class="heading-code" aria-hidden="true">[ PROJECT ]</span></div>
+        <div class="project-layout">
+          <form id="project-form" class="panel project-form">
+            <div class="panel-heading"><span class="section-number">01</span><h2><span data-i18n="项目与仓库">项目与仓库</span></h2></div>
+            <div class="field"><label for="project-name"><span data-i18n="项目名称">项目名称</span></label><input id="project-name" name="project_name" required maxlength="120" autocomplete="off" placeholder="你的 Mod 项目" data-i18n-placeholder="你的 Mod 项目"><p class="field-hint"><span data-i18n="用于识别本次迁移实例。">用于识别本次迁移实例。</span></p></div>
+            <fieldset class="source-mode-picker"><legend><span data-i18n="代码来源">代码来源</span></legend><label><input type="radio" name="source_mode" value="remote" checked> <span data-i18n="远程仓库">远程仓库</span></label><label><input type="radio" name="source_mode" value="local"> <span data-i18n="本地代码库">本地代码库</span></label></fieldset>
+            <div class="field" data-source-mode="local" hidden><label for="local-source-path"><span data-i18n="本地源码文件夹">本地源码文件夹</span></label><div class="input-action"><input id="local-source-path" readonly placeholder="选择包含 Mod 源码的文件夹" disabled data-i18n-placeholder="选择包含 Mod 源码的文件夹"><button id="choose-local-source" type="button" disabled><span data-i18n="选择文件夹">选择文件夹</span></button></div><input id="local-source-token" type="hidden" name="local_source_token" disabled><p class="field-hint"><span data-i18n="选择运行目录策略：Git 项目可新建分支和独立工作树；也可复制源码，或明确选择直接修改原目录。">选择运行目录策略：Git 项目可新建分支和独立工作树；也可复制源码，或明确选择直接修改原目录。</span></p><div id="local-git-status" class="git-status" role="status" aria-live="polite" hidden></div><p class="field-hint"><span data-i18n="源码仍会发送给所配置的模型 API；需要离线使用时，请配置本机模型服务。">源码仍会发送给所配置的模型 API；需要离线使用时，请配置本机模型服务。</span></p></div>
+            <div class="field" data-source-mode="remote"><label for="repository"><span data-i18n="GitHub / Gitee 仓库地址">GitHub / Gitee 仓库地址</span></label><div class="input-action"><input id="repository" name="source_repository" type="url" required autocomplete="url" placeholder="https://github.com/owner/repository"><button id="identify-button" type="button"><span data-i18n="识别仓库">识别仓库</span></button></div><p id="repository-hint" class="field-hint"><span data-i18n="读取分支、标签与版本信息后，仍可手动确认和修改。">读取分支、标签与版本信息后，仍可手动确认和修改。</span></p></div>
+            <div class="field" data-source-mode="remote"><label for="revision"><span data-i18n="分支 / 标签">分支 / 标签</span></label><input id="revision" name="source_revision" list="revisions" autocomplete="off" placeholder="默认分支" data-i18n-placeholder="默认分支"><datalist id="revisions"></datalist></div>
+          <div id="local-workspace-settings" class="panel workspace-settings" aria-labelledby="workspace-settings-heading" hidden>
+            <div class="panel-heading"><span class="section-number">LOCAL</span><h2 id="workspace-settings-heading"><span data-i18n="本地工作区">本地工作区</span></h2></div>
+            <p id="workspace-summary" class="field-hint" aria-live="polite"></p>
+            <fieldset id="local-workspace-modes" class="workspace-mode-list"><legend><span data-i18n="运行期间如何处理所选源码">运行期间如何处理所选源码</span></legend>
+              <label class="workspace-mode"><input type="radio" name="local_workspace_mode" value="git_worktree"><span><strong><span data-i18n="Git 新分支与独立工作树">Git 新分支与独立工作树</span></strong><small><span data-i18n="在所选 Git 仓库中创建你命名的分支，并在独立工作树里迁移。">在所选 Git 仓库中创建你命名的分支，并在独立工作树里迁移。</span></small></span></label>
+              <div id="workspace-branch-field" class="field workspace-branch-field"><label for="local-workspace-branch"><span data-i18n="新分支名称">新分支名称</span></label><input id="local-workspace-branch" type="text" autocomplete="off" spellcheck="false" aria-describedby="workspace-branch-hint workspace-branch-error"><p id="workspace-branch-hint" class="field-hint"><span data-i18n="请输入分支名称；ModPort 不会替你生成名称。">请输入分支名称；ModPort 不会替你生成名称。</span></p><p id="workspace-branch-error" class="inline-note workspace-error" role="alert" hidden></p></div>
+              <label class="workspace-mode"><input type="radio" name="local_workspace_mode" value="copy"><span><strong><span data-i18n="复制源码">复制源码</span></strong><small><span data-i18n="把当前文件和未提交修改复制到独立目录中。">把当前文件和未提交修改复制到独立目录中。</span></small></span></label>
+              <label class="workspace-mode"><input type="radio" name="local_workspace_mode" value="direct"><span><strong><span data-i18n="直接修改所选目录">直接修改所选目录</span></strong><small><span data-i18n="迁移过程中的文件改动会写入原目录。">迁移过程中的文件改动会写入原目录。</span></small></span></label>
+            </fieldset>
+            <p id="workspace-git-reason" class="inline-note workspace-reason" role="status" hidden></p>
+            <div id="workspace-direct-warning" class="direct-workspace-warning" hidden><p><span data-i18n="直接修改所选目录，不新建分支、不复制备份；运行期间请勿同时编辑">直接修改所选目录，不新建分支、不复制备份；运行期间请勿同时编辑</span></p><label><input id="direct-workspace-confirmed" type="checkbox"><span><span data-i18n="我已了解，并会在运行期间停止同时编辑此目录。">我已了解，并会在运行期间停止同时编辑此目录。</span></span></label><p id="workspace-direct-error" class="inline-note workspace-error" role="alert" hidden></p></div>
+            <p id="workspace-mode-error" class="inline-note workspace-error" role="alert" hidden></p>
+          </div>
+            <div class="version-grid">
+              <fieldset><legend><span class="version-marker source">SOURCE</span> <span data-i18n="源版本">源版本</span></legend><div class="field"><label for="source-minecraft">Minecraft</label><input id="source-minecraft" name="source_minecraft" required placeholder="例如 1.20.1" data-i18n-placeholder="例如 1.20.1"></div><div class="field"><label for="source-loader"><span data-i18n="加载器">加载器</span></label><select id="source-loader" name="source_loader"><option value="forge">Forge</option><option value="neoforge">NeoForge</option><option value="fabric">Fabric</option></select></div><div class="field"><label for="source-loader-version"><span data-i18n="加载器版本">加载器版本</span></label><input id="source-loader-version" name="source_loader_version" placeholder="自动识别或手动填写" data-i18n-placeholder="自动识别或手动填写"></div></fieldset>
+              <fieldset><legend><span class="version-marker target">TARGET</span> <span data-i18n="目标版本">目标版本</span></legend><div class="field"><label for="target-minecraft">Minecraft</label><input id="target-minecraft" name="target_minecraft" required placeholder="例如 1.21.1" data-i18n-placeholder="例如 1.21.1"></div><div class="field"><label for="target-loader"><span data-i18n="加载器">加载器</span></label><select id="target-loader" name="target_loader"><option value="neoforge">NeoForge</option><option value="forge">Forge</option><option value="fabric">Fabric</option></select></div><div class="field"><label for="target-loader-version"><span data-i18n="加载器版本">加载器版本</span></label><input id="target-loader-version" name="target_loader_version" placeholder="确认目标加载器版本" data-i18n-placeholder="确认目标加载器版本"></div></fieldset>
+            </div>
+            <div id="repository-warnings" class="inline-note" hidden></div>
+            <footer class="form-footer"><span><span data-i18n="版本信息将在启动时固定。">版本信息将在启动时固定。</span></span><button id="project-next" type="submit" class="primary" disabled><span data-i18n="确认项目，继续">确认项目，继续</span> <span aria-hidden="true">→</span></button></footer>
+          </form>
+          <aside class="project-aside"><section class="panel"><div class="panel-heading"><h2><span data-i18n="最近的实例">最近的实例</span></h2><span class="small-code">RECENT</span></div><div id="recent-runs" class="recent-runs"><p class="empty"><span data-i18n="正在读取本机实例…">正在读取本机实例…</span></p></div><button id="refresh-recent" type="button" class="text-button"><span data-i18n="刷新实例列表">刷新实例列表</span></button></section><div class="aside-note"><span class="small-code">WORKSPACE NOTES</span><p><span data-i18n="每次迁移独立保存。关闭窗口后，可从最近的实例重新打开。">每次迁移独立保存。关闭窗口后，可从最近的实例重新打开。</span></p><p><span data-i18n="源项目功能以确认结果和源码阅读为依据；目标行为由实际测试验证。">源项目功能以确认结果和源码阅读为依据；目标行为由实际测试验证。</span></p></div></aside>
+        </div>
+      </section>
+      <section id="settings-screen" class="screen setup-screen" aria-labelledby="settings-heading" hidden>
+        <div class="page-heading"><div><p class="eyebrow"><span data-i18n="EXECUTION SETTINGS / 执行设置">EXECUTION SETTINGS / 执行设置</span></p><h1 id="settings-heading"><span data-i18n="设定这次迁移。">设定这次迁移。</span></h1><p id="project-summary"></p></div><span class="heading-code" aria-hidden="true">[ CONFIG ]</span></div>
+        <section class="panel update-settings-panel"><div><h2 data-i18n="应用更新">应用更新</h2><p id="updates-settings-status" class="field-hint"></p></div><button type="button" data-open-updates aria-haspopup="dialog" data-i18n="检查更新">检查更新</button></section>
+        <form id="settings-form">
+          <div class="settings-layout">
+            <section class="panel budget-panel"><div class="panel-heading"><span class="section-number">02</span><h2><span data-i18n="执行预算">执行预算</span></h2></div><div class="field"><label for="max-hours"><span data-i18n="总时间限制">总时间限制</span> <span class="label-unit"><span data-i18n="小时">小时</span></span></label><input id="max-hours" type="number" min="0.01" step="any" required><p class="field-hint"><span data-i18n="所有任务共享本次执行的总时间。">所有任务共享本次执行的总时间。</span></p></div><div class="field"><label for="max-tokens"><span data-i18n="总 Token 限制">总 Token 限制</span></label><input id="max-tokens" type="number" min="1" step="1" required inputmode="numeric"><p class="field-hint"><span data-i18n="模型用量由运行服务记录。">模型用量由运行服务记录。</span></p></div><div class="budget-note"><span aria-hidden="true">↳</span><p><span data-i18n="模型与推理强度独立配置。本次选择会随实例保存。">模型与推理强度独立配置。本次选择会随实例保存。</span></p></div></section>
+            <section class="panel model-summary-panel"><div class="panel-heading"><h2><span data-i18n="模型配置">模型配置</span></h2></div><p id="model-summary" class="muted"></p><button type="button" data-open-model-settings><span data-i18n="配置模型">配置模型</span></button><p class="field-hint"><span data-i18n="API 连接、上下文与任务模型使用已保存的配置。可在启动前调整。">API 连接、上下文与任务模型使用已保存的配置。可在启动前调整。</span></p></section>
+          </div>
+          <footer class="settings-footer"><button type="button" data-screen="project"><span data-i18n="← 返回项目">← 返回项目</span></button><span id="launch-note"><span data-i18n="启动前请确认项目版本与执行预算。">启动前请确认项目版本与执行预算。</span></span><button id="launch-button" type="submit" class="primary"><span data-i18n="开始迁移">开始迁移</span> <span aria-hidden="true">→</span></button></footer>
+        </form>
+      </section>
+      <section id="run-screen" class="screen run-screen" aria-labelledby="run-heading" hidden>
+        <div class="run-heading"><div><p class="eyebrow"><span data-i18n="MIGRATION INSTANCE / 迁移实例">MIGRATION INSTANCE / 迁移实例</span></p><h1 id="run-heading"><span data-i18n="正在读取实例…">正在读取实例…</span></h1><div class="run-identification"><span id="run-status" class="badge"><span data-i18n="读取中">读取中</span></span><span id="run-id" class="small-code"></span></div></div><div class="run-actions"><button id="run-contributions-button" type="button" aria-haspopup="dialog" aria-controls="wiki-contributions-dialog" disabled><span data-i18n="贡献本次研究">贡献本次研究</span></button><button id="open-supervisor-chat" type="button" aria-controls="supervisor-panel"><span data-i18n="Supervisor 对话">Supervisor 对话</span></button><button id="run-refresh" type="button"><span data-i18n="刷新">刷新</span></button><button id="new-project" type="button"><span data-i18n="新建项目">新建项目</span></button><button id="cancel-button" type="button" class="danger"><span data-i18n="取消执行">取消执行</span></button></div></div>
+        <details id="run-overview" class="run-overview panel">
+          <summary><span data-i18n="执行总览">执行总览</span><span id="overview-hint" class="field-hint"></span></summary>
+          <div id="run-overview-content" class="run-overview-content">
+        <div class="run-budget" aria-label="执行用量" data-i18n-aria-label="执行用量"><div><span class="metric-label"><span data-i18n="已用时间">已用时间</span></span><strong id="elapsed-time"><span data-i18n="未知">未知</span></strong><span id="time-limit" class="metric-secondary"></span></div><div><span class="metric-label"><span data-i18n="已用 TOKEN">已用 TOKEN</span></span><strong id="used-tokens"><span data-i18n="未知">未知</span></strong><span id="token-limit" class="metric-secondary"></span></div><div class="sync-metric"><span class="metric-label"><span data-i18n="服务状态">服务状态</span></span><span id="sync-state"><span data-i18n="正在读取">正在读取</span></span><small id="sync-time"></small></div></div>
+        <section id="run-workspace" class="run-workspace panel" aria-labelledby="run-workspace-heading" hidden><div><p class="eyebrow"><span data-i18n="WORKSPACE / 工作区">WORKSPACE / 工作区</span></p><h2 id="run-workspace-heading"></h2><p id="run-workspace-path" class="workspace-path"></p><p id="run-workspace-original" class="workspace-path" hidden></p><code id="run-workspace-branch" class="workspace-branch" hidden></code></div><button id="open-workspace" type="button"><span data-i18n="打开工作区">打开工作区</span></button></section>
+        <p id="run-notice" class="inline-note" hidden></p>
+        <div id="stage-board" class="stage-board" aria-label="迁移任务" data-i18n-aria-label="迁移任务"></div>
+            <button id="return-supervisor-chat" type="button" aria-controls="supervisor-panel"><span data-i18n="返回 Supervisor 对话">返回 Supervisor 对话</span></button>
+          </div>
+        </details>
+        <section id="supervisor-panel" class="supervisor-panel panel" aria-labelledby="supervisor-heading"><div class="panel-heading"><div class="supervisor-title"><span class="status-dot" aria-hidden="true"></span><h2 id="supervisor-heading">Supervisor</h2><span class="muted"><span data-i18n="运行监督与对话">运行监督与对话</span></span></div><span id="supervisor-status" class="small-code"><span data-i18n="读取中">读取中</span></span></div><div class="supervisor-body"><div id="messages" class="messages" role="log" aria-label="Supervisor 对话" aria-live="polite" data-i18n-aria-label="Supervisor 对话"><p class="empty"><span data-i18n="对话记录会在这里显示。">对话记录会在这里显示。</span></p></div><form id="chat-form" class="chat-form"><label for="chat-message"><span data-i18n="向 Supervisor 提问或补充说明">向 Supervisor 提问或补充说明</span></label><textarea id="chat-message" rows="3" maxlength="12000" required placeholder="询问当前进展，或补充迁移要求…" data-i18n-placeholder="询问当前进展，或补充迁移要求…"></textarea><div class="chat-footer"><span class="field-hint"><span data-i18n="Ctrl / ⌘ + Enter 发送">Ctrl / ⌘ + Enter 发送</span></span><button id="chat-send" type="submit" class="primary"><span data-i18n="发送">发送</span> <span aria-hidden="true">↗</span></button></div><p class="field-hint"><span data-i18n="对话不会直接取消执行；生命周期操作请使用上方控制。">对话不会直接取消执行；生命周期操作请使用上方控制。</span></p></form></div></section>
+      </section>
+    </main>
+    <footer class="app-footer"><span><span class="status-dot" aria-hidden="true"></span> LOCAL WORKSPACE</span><button id="updates-button" type="button" aria-haspopup="dialog"><span id="updates-label" role="status" aria-live="polite" data-i18n="应用更新">应用更新</span></button><span id="workflow-label"><span data-i18n="等待连接服务">等待连接服务</span></span></footer>
+  </div>
+  <dialog id="model-settings-dialog" aria-labelledby="model-settings-heading">
+    <form id="model-settings-form" novalidate>
+      <div class="dialog-heading"><div><p class="eyebrow"><span data-i18n="MODEL SETTINGS / 模型配置">MODEL SETTINGS / 模型配置</span></p><h2 id="model-settings-heading"><span data-i18n="先连接，再选择模型。">先连接，再选择模型。</span></h2></div><button type="button" data-close-dialog="model-settings-dialog" aria-label="关闭模型配置" data-i18n-aria-label="关闭模型配置">×</button></div>
+      <p class="muted"><span data-i18n="保存到本机，供后续项目使用。正在执行的实例保留启动时的配置。">保存到本机，供后续项目使用。正在执行的实例保留启动时的配置。</span></p>
+      <p id="model-settings-error" class="inline-note" role="alert" hidden></p>
+      <nav id="model-setup-steps" class="model-setup-steps" aria-label="模型配置步骤" data-i18n-aria-label="模型配置步骤">
+        <button type="button" data-model-step="0"><span>01</span> <span data-i18n="API 连接">API 连接</span></button>
+        <button type="button" data-model-step="1"><span>02</span> <span data-i18n="困难任务模型">困难任务模型</span></button>
+        <button type="button" data-model-step="2"><span>03</span> <span data-i18n="常规 Coder 模型">常规 Coder 模型</span></button>
+      </nav>
+      <div id="model-setup-content"></div>
+      <p class="field-hint" id="model-setup-overrides"></p>
+      <div class="model-setup-navigation"><button id="model-setup-back" type="button"><span data-i18n="上一步">上一步</span></button><button id="model-setup-next" type="button" class="primary"><span data-i18n="下一步">下一步</span></button></div>
+      <details id="advanced-model-settings" class="advanced-model-settings"><summary><span data-i18n="高级配置：连接目录与逐角色覆盖">高级配置：连接目录与逐角色覆盖</span></summary>
+      <div class="model-section-heading"><h3><span data-i18n="API 连接与可用模型">API 连接与可用模型</span></h3><button id="add-provider" type="button"><span data-i18n="＋ 添加连接">＋ 添加连接</span></button></div>
+      <div id="provider-settings"></div>
+      <p id="model-settings-message" class="field-hint" role="status" aria-live="polite"></p>
+      <div class="model-section-heading"><h3><span data-i18n="任务使用的模型">任务使用的模型</span></h3><span class="muted"><span data-i18n="可按组或逐角色设置">可按组或逐角色设置</span></span></div>
+            <section class="model-panels" aria-label="模型配置" data-i18n-aria-label="模型配置"><datalist id="models-list"></datalist><datalist id="effort-list"><option value="low"></option><option value="medium"></option><option value="high"></option><option value="xhigh"></option><option value="max"></option></datalist><div id="model-groups"></div><p class="field-hint model-hint"><span data-i18n="大组设置仅在修改后应用。展开可单独配置角色；已有阶段覆盖和回退配置会保留。">大组设置仅在修改后应用。展开可单独配置角色；已有阶段覆盖和回退配置会保留。</span></p></section>
+      </details>
+      <details id="fallback-settings" class="advanced-model-settings"><summary><span data-i18n="备用模型（可选）">备用模型（可选）</span></summary><div id="fallback-settings-content"></div></details>
+      <footer class="model-settings-footer"><span class="field-hint"><span data-i18n="密钥留空保留已存密钥。保存配置不会发起模型请求。">密钥留空保留已存密钥。保存配置不会发起模型请求。</span></span><button type="button" data-close-dialog="model-settings-dialog"><span data-i18n="取消">取消</span></button><button id="save-model-settings" type="submit" class="primary"><span data-i18n="保存配置">保存配置</span></button></footer>
+    </form>
+  </dialog>
+  <dialog id="updates-dialog" aria-labelledby="updates-heading">
+    <div class="dialog-heading"><h2 id="updates-heading" data-i18n="应用更新">应用更新</h2><button type="button" data-close-dialog="updates-dialog" aria-label="关闭" data-i18n-aria-label="关闭">×</button></div>
+    <p class="muted" data-i18n="启动时自动检查 GitHub 正式版。发现新版后，可前往发布页手动下载。">启动时自动检查 GitHub 正式版。发现新版后，可前往发布页手动下载。</p>
+    <p id="updates-current"></p><p id="updates-status" role="status" aria-live="polite"></p><p id="updates-checked" class="field-hint"></p>
+    <div class="dialog-footer"><button id="updates-check" type="button" data-i18n="检查更新">检查更新</button><button id="updates-download" type="button" class="primary" hidden data-i18n="前往发布页下载">前往发布页下载</button></div>
+  </dialog>
+  <dialog id="environment-dialog" aria-labelledby="environment-heading"><div class="dialog-heading"><h2 id="environment-heading"><span data-i18n="运行环境">运行环境</span></h2><button type="button" data-close-dialog="environment-dialog" aria-label="关闭运行环境" data-i18n-aria-label="关闭运行环境">×</button></div><p class="muted"><span data-i18n="选择需要执行的准备操作。检查结果由本机服务提供。">选择需要执行的准备操作。检查结果由本机服务提供。</span></p><div id="environment-checks"></div><p id="setup-result" role="status" hidden></p><div class="dialog-footer"><button id="environment-refresh" type="button"><span data-i18n="重新检查">重新检查</span></button><button type="button" data-close-dialog="environment-dialog"><span data-i18n="关闭">关闭</span></button></div></dialog>
+  <dialog id="cancel-dialog" aria-labelledby="cancel-heading"><div class="dialog-heading"><h2 id="cancel-heading"><span data-i18n="取消本次执行？">取消本次执行？</span></h2></div><p><span data-i18n="将请求停止当前实例。任务清理可能需要时间，最终状态以服务返回为准。">将请求停止当前实例。任务清理可能需要时间，最终状态以服务返回为准。</span></p><p id="cancel-instance" class="small-code"></p><div class="dialog-footer"><button type="button" data-close-dialog="cancel-dialog" autofocus><span data-i18n="继续执行">继续执行</span></button><button id="confirm-cancel" type="button" class="danger"><span data-i18n="确认取消">确认取消</span></button></div></dialog>
+  <dialog id="wiki-contributions-dialog" aria-labelledby="wiki-contributions-heading" aria-describedby="wiki-contributions-intro">
+    <div class="dialog-heading"><h2 id="wiki-contributions-heading" data-i18n="研究贡献">研究贡献</h2><button id="wiki-contributions-close" type="button" aria-label="关闭研究贡献" data-i18n-aria-label="关闭研究贡献">×</button></div>
+    <p id="wiki-contributions-intro" class="muted" data-i18n="审阅并编辑本地研究草稿，再向社区 Wiki 提交 Draft PR。维护者审阅后决定是否合并。">审阅并编辑本地研究草稿，再向社区 Wiki 提交 Draft PR。维护者审阅后决定是否合并。</p>
+    <p id="wiki-contributions-error" class="contribution-error" role="alert" tabindex="-1" hidden></p>
+    <p id="wiki-contributions-status" class="field-hint" role="status" aria-live="polite" aria-atomic="true"></p>
+    <section class="contribution-wiki-update" aria-labelledby="contribution-wiki-heading"><div class="contribution-section-heading"><h3 id="contribution-wiki-heading" data-i18n="社区 Wiki">社区 Wiki</h3><button id="contribution-wiki-update" type="button" data-i18n="更新本地 Wiki">更新本地 Wiki</button></div><p class="field-hint" data-i18n="下载社区 Wiki 的最新内容，供之后新建的迁移实例使用。">下载社区 Wiki 的最新内容，供之后新建的迁移实例使用。</p></section>
+    <section class="contribution-account" aria-labelledby="contribution-account-heading">
+      <div class="contribution-section-heading"><h3 id="contribution-account-heading" data-i18n="GitHub 账号">GitHub 账号</h3><button id="contribution-login" type="button" data-i18n="在浏览器中登录 GitHub">在浏览器中登录 GitHub</button></div>
+      <p id="contribution-account-status" class="field-hint"></p>
+      <p class="field-hint" data-i18n="GitHub CLI 优先使用系统凭据存储；不可用时可能在本机私有目录保存凭据。系统存储可能与其他 gh 安装共享。凭据不会加入贡献草稿。">GitHub CLI 优先使用系统凭据存储；不可用时可能在本机私有目录保存凭据。系统存储可能与其他 gh 安装共享。凭据不会加入贡献草稿。</p>
+      <div id="contribution-device-login" hidden><p data-i18n="打开 GitHub 登录页面，输入以下一次性代码并完成授权。">打开 GitHub 登录页面，输入以下一次性代码并完成授权。</p><div class="contribution-device-actions"><code id="contribution-device-code" class="contribution-device-code"></code><a id="contribution-device-link" class="contribution-link" target="_blank" rel="noopener noreferrer" hidden data-i18n="打开 GitHub 登录页面">打开 GitHub 登录页面</a><button id="contribution-login-cancel" type="button" data-i18n="取消登录">取消登录</button></div><p id="contribution-login-status" class="field-hint" role="status" aria-live="polite"></p></div>
+    </section>
+    <div class="contribution-layout">
+      <section class="contribution-drafts" aria-labelledby="contribution-drafts-heading"><div class="contribution-section-heading"><h3 id="contribution-drafts-heading" data-i18n="本地草稿">本地草稿</h3><button id="contribution-refresh" type="button" data-i18n="刷新">刷新</button></div><div id="contribution-draft-list"></div><p id="contribution-empty" class="field-hint" data-i18n="暂无研究草稿。在迁移实例中导出研究结果后，可在这里审阅并提交。" hidden>暂无研究草稿。在迁移实例中导出研究结果后，可在这里审阅并提交。</p></section>
+      <form id="contribution-editor" class="contribution-editor" hidden>
+        <div class="field"><label for="contribution-title" data-i18n="贡献标题">贡献标题</label><input id="contribution-title" required maxlength="200" autocomplete="off"></div>
+        <div class="field"><label for="contribution-content" data-i18n="研究内容">研究内容</label><textarea id="contribution-content" rows="12" required spellcheck="false" aria-describedby="contribution-content-hint"></textarea><p id="contribution-content-hint" class="field-hint" data-i18n="可修改研究结论和证据；请保留 JSON 格式。">可修改研究结论和证据；请保留 JSON 格式。</p></div>
+        <details class="contribution-description"><summary data-i18n="PR 说明">PR 说明</summary><div class="field"><label for="contribution-body" data-i18n="提交说明（可选）">提交说明（可选）</label><textarea id="contribution-body" rows="5"></textarea></div></details>
+        <p id="contribution-save-state" class="field-hint"></p>
+        <p id="contribution-submit-account" class="field-hint"></p>
+        <a id="contribution-pr-link" class="contribution-link" target="_blank" rel="noopener noreferrer" hidden data-i18n="查看 Draft PR">查看 Draft PR</a>
+        <div class="dialog-footer"><button id="contribution-save" type="button" data-i18n="保存草稿">保存草稿</button><button id="contribution-submit" type="submit" class="primary" data-i18n="提交 Draft PR">提交 Draft PR</button></div>
+      </form>
+    </div>
+  </dialog>
+</body>
+</html>

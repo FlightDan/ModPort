@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "modport"
+version = "1.0.0"
+description = "Agent-assisted Forge to NeoForge mod migration with runtime evidence"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "NOTICE", "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md"]
+authors = [{name = "FlightDan"}]
+dependencies = [
+  "dispatcher-sdk==0.7.1",
+]
+
+[project.urls]
+Author = "https://github.com/FlightDan/"
+Repository = "https://github.com/FlightDan/ModPort"
+Issues = "https://github.com/FlightDan/ModPort/issues"
+
+[project.scripts]
+modport = "modport.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["modport", "modport.*"]
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.package-data]
+modport = ["rules/*.md", "rules/*.json", "vendor_skills/**/*", "vendor_skills/*", "web_static/*", "desktop_static/*", "desktop_static/assets/*", "locales/*.json"]
+
+[tool.unittest]
+testpaths = ["tests"]

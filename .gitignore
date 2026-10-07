@@ -1,0 +1,64 @@
+# Python cache and local tooling
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Virtual environments
+.venv/
+.venv-*/
+venv/
+env/
+ENV/
+
+# Historical local material is retained outside the public source tree.
+/legacy/
+
+# Packaging and build artifacts
+/build/
+/dist/
+*.egg-info/
+pip-wheel-metadata/
+*.egg
+
+# ModPort generated reports, runs, caches, and demos
+/runs/
+/demo-runs/
+/migration-reports/
+/cleanup-reports/
+/dependency-cache/
+/dependency-downloads/
+/.modport-web-live/
+/check-cache/
+/environment-cache/
+/deployments/
+/handoffs/
+/repairs/
+/source-archives/
+/tools/
+/dispatcher-sdk/
+/modport-models.json
+/private-upgrade-policy.json
+*.log
+
+# Local credentials and editor state
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+/desktop/node_modules/
+
+# Codex local workspace artifacts
+/.agents/
+/.aws/
+/.codex/
+/.codex-preflight/
+/.codex-recovery-home*/

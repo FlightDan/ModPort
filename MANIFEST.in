@@ -1,0 +1,14 @@
+# Public source distribution: opt in current source, tests and reusable docs.
+# Do not traverse/copy local deployments, runtime data or historical evidence.
+global-exclude *
+include pyproject.toml setup.py MANIFEST.in
+include README.md README.en.md LICENSE NOTICE ATTRIBUTION.md THIRD_PARTY_NOTICES.md
+include CONTRIBUTING.md SECURITY.md
+recursive-include src/modport *.py *.md *.json *.js *.css *.html *.ts *.sh LICENSE NOTICE
+recursive-include tests *.py *.cjs *.js *.json *.java
+include desktop/package.json desktop/main.cjs desktop/preload.cjs desktop/i18n.cjs desktop/updates.cjs
+include scripts/build_source.py scripts/build_desktop.py
+include docs/README.md docs/WORKFLOW.md docs/AGENT_RULES.md docs/EVIDENCE_PROTOCOL.md
+include docs/DESKTOP.md docs/DESKTOP_API.md docs/DRIVER_LEASE.md docs/RELEASING.md docs/WIKI_KNOWLEDGE.md
+global-exclude *.py[cod] .env .env.* *.pem *.key
+prune src/modport/__pycache__

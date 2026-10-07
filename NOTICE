@@ -1,0 +1,20 @@
+ModPort
+Copyright (C) 2026 FlightDan
+https://github.com/FlightDan/
+
+Except for separately identified third-party material, ModPort is licensed
+under the GNU Affero General Public License, version 3 only (AGPL-3.0-only).
+See LICENSE for the complete terms and THIRD_PARTY_NOTICES.md for third-party
+licenses and attribution. Contributors retain copyright in their contributions.
+
+ModPort is distributed without any warranty, including the implied warranties
+of merchantability or fitness for a particular purpose. See LICENSE.
+
+Using ModPort does not transfer ownership of the input mod or migration output
+to FlightDan. Merely using the tool does not license the output under the AGPL.
+Any protected code or other material actually incorporated into an output
+remains subject to its applicable license.
+
+The migration-tool acknowledgment described in ATTRIBUTION.md is voluntary.
+It is not an additional license condition. This notice does not grant rights
+to represent a derivative or third-party service as the official ModPort project.

@@ -1,0 +1,9 @@
+{
+  "name": "modport-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "main": "main.cjs",
+  "description": "ModPort desktop application",
+  "license": "AGPL-3.0-only",
+  "author": "FlightDan (https://github.com/FlightDan/)"
+}

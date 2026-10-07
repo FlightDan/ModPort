@@ -1,0 +1,5 @@
+# ModPort debugging integration
+
+Read superpowers/skills/systematic-debugging/SKILL.md before target repairs and follow its evidence-first diagnosis. The bundled test-driven-development and verification-before-completion dependencies and MIT license are pinned by superpowers/upstream-lock.json.
+
+ModPort owns execution and control flow: agents write code and tests but do not execute project code. Submit a proposed failing regression and diagnosis to the host, which runs credential-free sandbox gates. Do not weaken frozen contracts, bypass independent review, suppress failures, or spawn additional unbudgeted agents. References to asking a human after three fixes are adapted here to return findings to the host; every third failed repair routes to the planner for a new batch under the same budget. Each repair is a fresh ephemeral invocation with authenticated prior failures, plan, both exact skill references and the mod analysis. The host invalidates previous candidate approvals and runs build, review and independent tests again.
