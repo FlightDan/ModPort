@@ -13,7 +13,7 @@ from .repair_evidence import snapshot_repair_evidence
 from .workflow import WORKFLOW_VERSION, WorkflowDefinition, compile_migration_workflow
 
 
-UPGRADE_SOURCE_WORKFLOW_VERSION = 42
+UPGRADE_SOURCE_WORKFLOW_VERSION = 44
 UPGRADE_TARGET_WORKFLOW_VERSION = WORKFLOW_VERSION
 
 

@@ -772,6 +772,36 @@ def _prepare_required_target_restart(root, state, app, start_stage):
     return True
 
 
+def _prepare_migration_target_restart(state, app, start_stage, target_workflow_version):
+    """Restart the integrated candidate tail without carrying its settlement."""
+    from .behavior_requirements import source_reading_policy
+    from .workflow import stage_routes
+
+    header = state.get('input', {})
+    if (target_workflow_version is None or target_workflow_version < 44
+            or start_stage != 'code_cleanup'
+            or header.get('request', {}).get('workflow_mode', 'migration') != 'migration'
+            or not source_reading_policy(header)):
+        return
+    main, _, _, _ = stage_routes(header)
+    tail = set(main[main.index(start_stage):]) | {'target_contract_freeze', 'final_cleanup'}
+    effective = app['effective']
+    removed = {key: value for key, value in effective.items()
+               if value.get('stage_id', key) in tail}
+    controls = {key: app.pop(key) for key in (
+        'final_cleanup', 'flowthrough_finish_pending', 'execution_status',
+        'required_behavior_status', 'required_behavior_assessments') if key in app}
+    app['continuation_feedback']['migration_target_restart'] = {
+        'start_stage': start_stage, 'previous_results': removed,
+        'previous_settlement': controls,
+    }
+    for key in removed:
+        del effective[key]
+    app.update(repair_context=None, rework_context=None, active_group=None,
+               early_active=False, early_pending=[], gap_pending=[])
+    app['flowthrough_resume'].update(next_stage=start_stage, explicit_target_restart=True)
+
+
 def _reconsider_dependency_stop(state, app):
     """Reassess a pre-agent conflict only in an explicitly requested successor."""
     feedback = app.get('continuation_feedback', {})
@@ -1035,6 +1065,10 @@ def prepare_application(root, state, *, start_stage=None,
     if not v16 and start_stage not in {None, "contract_repair_plan"}:
         raise ValueError("continuation currently supports contract_repair_plan only")
     app = json_copy(state.get("application_state") or {})
+    # Watchdog episodes belong to their SDK segment. A successor has fresh
+    # tasks, so inherited authority must not wait for or act on old attempts.
+    reset_watchdog = target_workflow_version is not None and target_workflow_version >= 44
+    inherited_watchdog = app.pop("watchdog", None) if reset_watchdog else None
     checkpoint = _v17_checkpoint(app, start_stage)
     checkpoint_continuation = (
         state["state"] == "succeeded"
@@ -1066,9 +1100,15 @@ def prepare_application(root, state, *, start_stage=None,
         app = _prepare_v16_application(root, state, app)
         feedback = app["continuation_feedback"]
         failure = OperationResult.from_dict(feedback["gate_failure"])
-        app.setdefault("effective", {})[failure.stage_id] = json_copy(feedback["gate_failure"])
-        if failure.task_id != failure.stage_id:
-            app["effective"][failure.task_id] = json_copy(feedback["gate_failure"])
+        effective = app.setdefault("effective", {})
+        # The diagnostic selects a historical failure, not the current stage
+        # producer. A completed repair may already have replaced that result.
+        # Keep the failure in feedback; adding even a task alias here would
+        # let its old artifact references override the repaired stage's refs.
+        if failure.stage_id not in effective:
+            effective[failure.stage_id] = json_copy(feedback["gate_failure"])
+            if failure.task_id != failure.stage_id:
+                effective.setdefault(failure.task_id, json_copy(feedback["gate_failure"]))
         app["flowthrough_resume"] = {
             "stage": failure.stage_id, "task_id": failure.task_id,
             "command_id": failure.command_id,
@@ -1097,6 +1137,7 @@ def prepare_application(root, state, *, start_stage=None,
                 "settled_coder_task_ids": budget_group["scheduled"],
             }
         _prepare_required_target_restart(root, state, app, start_stage)
+        _prepare_migration_target_restart(state, app, start_stage, target_workflow_version)
         rebound_integration = _prepare_integration_successor(root, state, app)
         if not rebound_integration:
             resume = app['flowthrough_resume']
@@ -1108,6 +1149,13 @@ def prepare_application(root, state, *, start_stage=None,
                 _prepare_integration_replay(root, state, app, replay_stage)
         if target_workflow_version >= 40 and start_stage is None:
             _reconsider_dependency_stop(state, app)
+        if reset_watchdog:
+            if isinstance(inherited_watchdog, dict):
+                app["continuation_feedback"]["previous_watchdog"] = {
+                    "previous_segment_id": state.get("run_id"),
+                    "state": inherited_watchdog,
+                }
+            app["watchdog"] = {"seen": [], "episodes": {}}
         app["acceptance_status"] = "unverified"
         return app
     if v16:

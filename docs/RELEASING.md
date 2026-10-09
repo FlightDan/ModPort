@@ -7,10 +7,11 @@
 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
 
 公开源码地址为 [FlightDan/ModPort](https://github.com/FlightDan/ModPort)，默认
-分支为 `main`。Python 与桌面版本均为 `1.0.1`，对应正式版标签 `v1.0.1`；
-工作流版本独立，当前内嵌 workflow 43。此版本修复续跑时完整编码产物的
-恢复与集成顺序；保留原 Run 截止时间、累计预算和历史证据。正式发布使用新的
-Tag 和下载包，`1.0.0` 用户可通过桌面版本检查发现更新。
+分支为 `main`。Python 与桌面版本均为 `1.0.2`，对应正式版标签 `v1.0.2`；
+工作流版本独立，当前内嵌 workflow 45。此版本修复 watchdog 主管决策的
+宿主身份绑定、重试诊断和最新结果传递，以及续跑时历史失败覆盖已完成修复的问题；
+保留原 Run 截止时间、累计使用量和历史证据。正式发布使用新的
+Tag 和下载包，旧版本用户可通过桌面版本检查发现更新。
 `dispatcher-sdk==0.7.1` 已在[官方 release](https://github.com/FlightDan/dispatcher-sdk/releases/tag/v0.7.1)
 发布 wheel 和 source distribution。本工作区将原始 release assets 放在
 `build/sdk-release/0.7.1/`，并将 sdist 解压到 `dispatcher-sdk/`，保留 Apache

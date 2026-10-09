@@ -285,7 +285,7 @@ def _source_reading_task(task, protected, command):
                     'target test authoring and execution are deferred for this scope. Commit the migration.')
         return task, protected
     target_authors = {'artifact_test_design', 'implementation', 'target_revise',
-                      'development_prepare', 'goal_prepare', 'coder', 'test_design'}
+                      'development_prepare', 'goal_prepare', 'coder'}
     if command.stage_id in target_authors:
         task += (
             '\nRead behavior_requirements.requirements and design executable target assertions '

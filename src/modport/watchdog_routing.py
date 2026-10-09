@@ -4,6 +4,7 @@ from pathlib import Path
 from .contracts import OperationInput, json_copy
 from .watchdog_events import enabled, notifications
 from .watchdog_supervisor import validate_watchdog_decision
+from .failure_supervision import recovery_enabled, next_failure, diagnosed
 
 TERMINAL = {'succeeded', 'failed', 'cancelled', 'timed_out', 'dead'}
 
@@ -29,9 +30,10 @@ def exhausted(owner, header, app):
     return None
 
 
-def begin(owner, snapshot, header, app, incident):
+def begin(owner, snapshot, header, app, incident, *, resume_controls=None):
     state = app.setdefault('watchdog', {})
-    state['authorized'] = True
+    if enabled(header, app):
+        state['authorized'] = True
     state.setdefault('seen', [])
     state.setdefault('episodes', {})
     identity = incident['incident_id']
@@ -51,6 +53,8 @@ def begin(owner, snapshot, header, app, incident):
     payload = {'watchdog_incident': request}
     upstream = {}
     target = snapshot['tasks'].get(request['target_task_id'])
+    if target and target['attempts'][-1]['command']['execution_id'] != request['target_execution_id']:
+        target = None
     if target:
         command, outcome = owner._flowthrough_outcome(target['attempts'][-1])
         request['target_result'] = outcome.to_dict()
@@ -76,7 +80,9 @@ def begin(owner, snapshot, header, app, incident):
         extra_options={'workspace': workspace})
     if any(op['kind'] in {'add_task', 'new_attempt'} for op in operations):
         episode = {'request': request, 'status': 'pending', 'supervisor_task_id': task_id,
-                   'created_at': owner.clock()}
+                   'created_at': owner.clock(),
+                   'resume_controls': json_copy(resume_controls if resume_controls is not None else
+                       {key: app.get(key) for key in ('active_stage', 'active_group')})}
         if target and target['attempts'][-1]['state'] not in TERMINAL:
             from .progress_watchdog import capture_progress
             baseline = capture_progress(header['run_dir'], command)
@@ -91,6 +97,7 @@ def begin(owner, snapshot, header, app, incident):
 def _close(state, episode, status):
     episode['status'] = status
     state['active'] = None
+    state.pop('resume_controls', None)
 
 
 def _retry_diagnosis(owner, snapshot, header, app, episode, reason):
@@ -101,26 +108,59 @@ def _retry_diagnosis(owner, snapshot, header, app, episode, reason):
         return []
     previous = snapshot['tasks'][episode['supervisor_task_id']]['attempts'][-1]
     previous_command = OperationInput.from_dict(previous['command']['payload'])
-    payload = {'watchdog_incident': {**episode['request'], 'prior_recovery': reason}}
+    request = {**json_copy(episode['request']), 'prior_recovery': reason,
+        'known_task_ids': list(snapshot['tasks']),
+        'budget_context': {'deadline_epoch': owner._effective_deadline(header, app),
+            'now': owner.clock(), 'agent_assignments': app.get('agent_assignments', 0),
+            'max_agent_assignments': header['request']['budget'].get('max_agent_assignments')}}
+    # Retain the failed attempt as the incident's cause, while exposing results
+    # produced by its repairs. Replaying only the initial failure invites the
+    # next supervisor to request the same already-completed work again.
+    upstream = {**previous_command.upstream_results, **app.get('effective', {})}
+    stages = {'code_cleanup', 'target_contract_freeze', 'target_build',
+              request.get('target_input', {}).get('stage_id'), request.get('target_task_id')}
+    latest = {}
+    for stage in stages:
+        result = app.get('effective', {}).get(stage)
+        if result is not None:
+            upstream[stage] = json_copy(result)
+            latest[stage] = {key: result.get(key) for key in
+                            ('command_id', 'stage_id', 'status', 'error_code', 'detail')}
+    request['current_results'] = latest
+    previous_outputs = (episode.get('supervisor_result') or {}).get('outputs', {})
+    report = previous_outputs.get('watchdog_supervisor_raw_report')
+    if report:
+        request['previous_supervisor_report'] = {'path': report}
+    payload = {'watchdog_incident': request}
     for key in ('diagnostic_repair_targets', 'diagnostic_repair_refs'):
         if key in previous_command.payload:
             payload[key] = json_copy(previous_command.payload[key])
     operations = owner._schedule(snapshot, header, app, 'supervisor',
         task_id=episode['supervisor_task_id'], dependencies=[], activate=False,
-        payload=payload, upstream_overrides=previous_command.upstream_results,
+        payload=payload, upstream_overrides=upstream,
         extra_options={'workspace': 'workspaces/watchdog/' + episode['supervisor_task_id']})
-    episode.pop('retry_at', None)
-    episode.pop('decision', None)
-    episode['status'] = 'pending'
+    if any(op['kind'] in {'add_task', 'new_attempt'} for op in operations):
+        episode['request'] = request
+        episode.pop('retry_at', None)
+        episode.pop('decision', None)
+        episode['status'] = 'pending'
     return operations
 
 
 def decide(owner, snapshot, header, app, sdk):
     """Return (operations, owns_business_routing) while diagnosis is pending."""
-    if not enabled(header, app) or app.get('user_cancelled') or app.get('stop_reason'):
+    if not recovery_enabled(header, app) or app.get('user_cancelled') or app.get('stop_reason'):
         return [], False
     state = app.setdefault('watchdog', {'seen': [], 'episodes': {}})
     if not state.get('active'):
+        incident = next_failure(owner, snapshot, header, app)
+        if incident is not None:
+            if exhausted(owner, header, app):
+                return [], False
+            operations = begin(owner, snapshot, header, app, incident)
+            return operations, bool(state.get('active') or app.get('stop_reason') or operations)
+        if not enabled(header, app):
+            return [], False
         for event, ref in notifications(header['run_dir'], header['run_id']):
             identity = event['notification_id']
             if identity in state.setdefault('seen', []):
@@ -142,6 +182,8 @@ def decide(owner, snapshot, header, app, sdk):
                     continue
                 if kind == 'terminal' and successful(owner, current):
                     continue
+                if kind == 'terminal' and diagnosed(state, execution_id):
+                    continue
             elif kind != 'driver_lost':
                 continue
             if kind not in {'stalled', 'terminal', 'recovery_required', 'driver_lost', 'no_useful_progress'}:
@@ -154,6 +196,39 @@ def decide(owner, snapshot, header, app, sdk):
             return operations, True
         return [], False
     episode = state['episodes'][state['active']]
+    queued = episode.get('resume_pending')
+    if queued is not None:
+        task = snapshot['tasks'].get(queued['task_id'])
+        attempt = task['attempts'][-1] if task else None
+        if attempt is None or attempt['command']['execution_id'] != queued['execution_id']:
+            _close(state, episode, 'superseded')
+            return [], False
+        if attempt['state'] != 'planned':
+            _close(state, episode, 'resumed')
+            return [], False
+        if queued.get('caller_id'):
+            caller = next((row for item in snapshot['tasks'].values() for row in item['attempts']
+                           if row['command']['execution_id'] == queued['caller_id']), None)
+            record = next((row for row in app.get('review_rework', {}).get('requests', {}).values()
+                           if row.get('task_id') == queued['task_id']), None)
+            if (caller is None or caller['state'] in TERMINAL or record is None
+                    or owner._tool_cancelled(Path(header['run_dir']), record)):
+                if record is not None:
+                    record['recovery_caller_closed'] = True
+                _close(state, episode, 'caller_closed')
+                app.get('memory_waits', {}).pop('failure_resume', None)
+                if queued['execution_id'] not in app['cancel_sent']:
+                    app['cancel_sent'].append(queued['execution_id'])
+                    return [{'kind': 'cancel', 'task_id': queued['task_id'],
+                             'reason': 'reviewer tool custody closed during recovery queue'}], True
+                return [], False
+        from .failure_resume import capacity_available
+        if not capacity_available(owner, snapshot, header, app, queued['stage'],
+                execution_id=queued['execution_id'], caller_id=queued.get('caller_id')):
+            return [], True
+        _close(state, episode, 'resumed')
+        app.get('memory_waits', {}).pop('failure_resume', None)
+        return [{'kind': 'dispatch', 'task_id': queued['task_id']}], True
     operations = owner._review_rework_decision(snapshot, header, app)
     if app.get('stop_reason'):
         return operations, False
@@ -171,6 +246,10 @@ def decide(owner, snapshot, header, app, sdk):
         try:
             if result.status != 'completed':
                 raise ValueError(result.detail or result.error_code or 'supervisor failed')
+            if result.outputs.get('watchdog_decision') is None:
+                diagnostics = result.outputs.get('watchdog_supervisor_diagnostics')
+                if isinstance(diagnostics, list) and diagnostics:
+                    raise ValueError('; '.join(str(item) for item in diagnostics))
             episode['decision'] = validate_watchdog_decision(
                 result.outputs.get('watchdog_decision'), episode['request'])
         except (ValueError, TypeError, KeyError) as error:
@@ -202,12 +281,17 @@ def decide(owner, snapshot, header, app, sdk):
             'Named prerequisites settled; inspect their actual results before resuming.'), True
     if action == 'continue':
         if failed_route or target and (target['state'] == 'recovery_required'
-                       or target['state'] in TERMINAL and not successful(owner, target)):
+                       or target['state'] in TERMINAL and not successful(owner, target)
+                       and request['kind'] != 'task_failure'):
             return operations + _retry_diagnosis(owner, snapshot, header, app, episode,
                 'Target is settled unsuccessfully; supply a concrete recovery instruction or real prerequisite.'), True
         _close(state, episode, 'continued')
         return operations, False
     if not target:
+        if failed_route:
+            return operations + _retry_diagnosis(owner, snapshot, header, app, episode,
+                'The host failure has no bound execution to resume. Diagnose the missing host '
+                'prerequisite or request an explicit prerequisite wait; do not treat it as recovered.'), True
         # Driver restoration has already occurred before this assignment.
         _close(state, episode, 'driver_resumed')
         return operations, False
@@ -256,9 +340,19 @@ def decide(owner, snapshot, header, app, sdk):
         episode['status'] = 'cancelling'
         app['cancel_sent'].append(command.command_id)
         return operations, True
-    controls = state.get('resume_controls')
-    if controls:
-        app.update(json_copy(controls))
+    controls = episode.get('resume_controls')
+    if controls is not None:
+        # The branch may have consumed supervisor-requested repairs meanwhile.
+        # Restore its route, without replacing fresh group results with the
+        # pre-diagnosis copy when the same group still owns the task.
+        group = app.get('active_group')
+        restored = json_copy(controls)
+        prior_group = restored.get('active_group')
+        if (isinstance(group, dict) and isinstance(prior_group, dict)
+                and group.get('kind') == prior_group.get('kind')
+                and group.get('generation') == prior_group.get('generation')):
+            restored['active_group'] = group
+        app.update(restored)
     if command.stage_id == 'coder':
         from .watchdog_coder import revive
         try:
@@ -280,28 +374,33 @@ def decide(owner, snapshot, header, app, sdk):
             return operations + _retry_diagnosis(owner, snapshot, header, app, episode,
                 'The failed planner no longer matches the current development group; diagnose its current binding.'), True
         restart = episode['planner_restart']
-        operations += owner._schedule(snapshot, header, app, command.stage_id,
+        retry = owner._schedule(snapshot, header, app, command.stage_id,
             task_id=restart['task_id'], dependencies=[], activate=False,
             payload=restart['payload'], artifact_overrides=restart['artifact_refs'],
             extra_options={key: value for key, value in command.options.items()
                            if key in {'workspace', 'goal_scope'}})
-        _close(state, episode, 'planner_resumed')
+        operations += retry
+        if any(op['kind'] in {'add_task', 'new_attempt'} for op in retry):
+            _close(state, episode, 'planner_resumed')
         return operations, True
-    payload = {**command.payload, 'watchdog_recovery': {
-        'incident_id': request['incident_id'], 'instruction': decision['instruction'],
-        'reason': decision['reason'], 'previous_execution_id': command.command_id}}
-    retry = owner._schedule(snapshot, header, app, command.stage_id, task_id=command.task_id,
-        dependencies=[], payload=payload,
-        artifact_overrides={**command.artifact_refs, **owner._refs(header, app)},
-        extra_options={key: value for key, value in command.options.items()
-                       if key in {'workspace', 'goal_scope'}})
+    from .failure_resume import ClosedReworkRequest, resume_assignment
+    try:
+        retry = resume_assignment(owner, snapshot, header, app, episode, command, decision)
+    except ClosedReworkRequest as error:
+        episode['diagnostic'] = str(error)
+        _close(state, episode, 'caller_closed')
+        return operations, False
+    except ValueError as error:
+        return operations + _retry_diagnosis(owner, snapshot, header, app, episode, str(error)), True
     operations += retry
-    _close(state, episode, 'resumed')
+    if (any(op['kind'] in {'add_task', 'new_attempt'} for op in retry)
+            and not episode.get('resume_pending')):
+        _close(state, episode, 'resumed')
     return operations, True
 
 
 def intercept_failure(owner, snapshot, header, operations, app):
-    if not enabled(header, app) or app.get('user_cancelled') or app.get('watchdog', {}).get('stop_confirmed'):
+    if not recovery_enabled(header, app) or app.get('user_cancelled') or app.get('watchdog', {}).get('stop_confirmed'):
         return operations
     finish = next((op for op in operations if op['kind'] == 'finish' and op['state'] == 'failed'), None)
     stopping = app.get('stop_reason') and app.get('stop_state') == 'failed'
@@ -309,27 +408,38 @@ def intercept_failure(owner, snapshot, header, operations, app):
         return operations
     old = snapshot.get('application_state') or {}
     state = app.setdefault('watchdog', {})
-    state['resume_controls'] = {key: json_copy(app.get(key) or old.get(key))
-                                for key in ('active_stage', 'active_group')}
+    controls = {key: json_copy(app[key] if app.get(key) is not None else old.get(key))
+                for key in ('active_stage', 'active_group')}
     if app.get('failed_development_group'):
-        state['resume_controls']['active_group'] = json_copy(app['failed_development_group'])
+        controls['active_group'] = json_copy(app['failed_development_group'])
     task_id = old.get('active_stage')
     target = snapshot['tasks'].get(task_id)
-    if target is None or state['resume_controls'].get('active_group') and successful(owner, target['attempts'][-1]):
+    if (target is not None and target['attempts'][-1].get('generation', snapshot.get('generation', 0))
+            != snapshot.get('generation', 0)):
+        target = None
+        task_id = None
+    if target is None or controls.get('active_group') and successful(owner, target['attempts'][-1]):
         candidates = [(key, value) for key, value in snapshot['tasks'].items()
             if value['attempts'][-1]['state'] in TERMINAL
+            and value['attempts'][-1].get('generation', snapshot.get('generation', 0))
+                == snapshot.get('generation', 0)
             and not successful(owner, value['attempts'][-1])
             and OperationInput.from_dict(value['attempts'][-1]['command']['payload']).stage_id != 'supervisor']
         if candidates:
             task_id, target = candidates[-1]
     reason = app.get('terminal_reason') or app.get('stop_reason') or 'Run failed'
     app.update(stop_reason=None, stop_state=None, terminal_reason=None)
-    incident = {'incident_id': f'failure.g{snapshot.get("generation", 0)}.r{snapshot["revision"]}',
+    incident = {'incident_id': f'finish.g{snapshot.get("generation", 0)}.{len(state.get("episodes", {})) + 1}',
         'kind': 'run_failure', 'reason': reason, 'target_task_id': task_id,
-        'target_execution_id': target['attempts'][-1]['command']['execution_id'] if target else None}
-    withdrawn = {op['task_id'] for op in operations if op['kind'] == 'cancel'}
+        'target_execution_id': target['attempts'][-1]['command']['execution_id'] if target else None,
+        'business_failure': {'acceptance_status': app.get('acceptance_status', 'unverified'),
+            'final_cleanup': json_copy(app.get('final_cleanup', {}))}}
+    withdrawn = {op['task_id'] for op in operations
+                 if op['kind'] == 'cancel' and op.get('reason') == reason}
     for key in withdrawn:
         execution_id = snapshot['tasks'].get(key, {}).get('attempts', [{}])[-1].get('command', {}).get('execution_id')
         if execution_id in app.get('cancel_sent', []):
             app['cancel_sent'].remove(execution_id)
-    return [op for op in operations if op['kind'] not in {'finish', 'cancel'}] + begin(owner, snapshot, header, app, incident)
+    return [op for op in operations if op['kind'] != 'finish'
+            and not (op['kind'] == 'cancel' and op['task_id'] in withdrawn)] + begin(
+                owner, snapshot, header, app, incident, resume_controls=controls)

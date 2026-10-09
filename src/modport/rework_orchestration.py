@@ -6,7 +6,7 @@ import re
 import time
 
 from .contracts import OperationInput, OperationResult, json_copy
-from .business_policy import business_gates_disabled
+from .business_policy import business_gates_disabled, compile_package_scope
 from .evidence import atomic_json, verified_path
 from .progress_policy import progress_supervised
 from .rework_tools import (REVIEW_AUTHORS, REVIEW_REPORT_PATHS, is_interactive_review,
@@ -199,7 +199,10 @@ class ReviewReworkOrchestration:
             if task is None:
                 continue  # Dispatch and application state commit atomically.
             attempt = task['attempts'][-1]
-            cancel = self._tool_cancelled(root, record)
+            from .failure_supervision import owns_failure
+            if owns_failure(app, attempt['command']['execution_id']):
+                continue
+            cancel = self._tool_cancelled(root, record) or record.get('recovery_caller_closed', False)
             caller_closed = caller is None or caller[1]['state'] in _DONE
             if record.get('waiting_resources') and attempt['state'] not in _DONE:
                 # A planned SDK task holds no worker. Preserve its command and
@@ -213,8 +216,9 @@ class ReviewReworkOrchestration:
                     record.update(state='failed', error=reason, waiting_resources=False)
                     continue
                 if not self._memory_capacity(snapshot, header, app, 'rework',
-                        requested_stage=('agent_rework' if record.get('target_stage') == 'coder'
-                                         else record.get('target_stage', 'agent_rework')),
+                        requested_stage=(record.get('followup_stage') or
+                                         ('agent_rework' if record.get('target_stage') == 'coder'
+                                          else record.get('target_stage', 'agent_rework'))),
                         exclude_execution_ids=(record['reviewer_execution_id'],
                                                attempt['command']['execution_id']),
                         retained_memory_execution_ids=(record['reviewer_execution_id'],)):
@@ -257,16 +261,17 @@ class ReviewReworkOrchestration:
             record['text'] = '\n\n'.join(filter(None, [record.get('text'),
                 _result_text(root, outcome, max_chars=12000 if repair_diagnostics else None)]))
             if (header.get('definition', {}).get('workflow_version', 0) >= 26
-                    and source_stage == 'contract_freeze'
+                    and source_stage in {'contract_freeze', 'target_contract_freeze'}
                     and outcome.status == 'completed'):
                 lock_ref = outcome.outputs.get('artifact_refs', {}).get('functional_contract_lock')
                 try:
-                    from .evidence import file_digest
                     if not isinstance(lock_ref, dict):
                         raise ValueError('freeze did not publish a contract lock reference')
                     path = verified_path(root, lock_ref)
-                    if lock_ref.get('sha256') != file_digest(path):
-                        raise ValueError('contract lock reference digest does not match file')
+                    if source_stage == 'contract_freeze':
+                        from .evidence import file_digest
+                        if lock_ref.get('sha256') != file_digest(path):
+                            raise ValueError('contract lock reference digest does not match file')
                 except (OSError, ValueError, TypeError) as exc:
                     record['lock_handoff_error'] = str(exc)
                     record['text'] += '\n\nContract lock handoff failed: ' + str(exc)
@@ -316,6 +321,18 @@ class ReviewReworkOrchestration:
                     elif (record['reviewer_stage'] == 'code_review'
                           and source_stage in {'coder', 'code_cleanup'}):
                         verification = 'target_build'
+                from .behavior_requirements import source_reading_policy
+                if source_reading_policy(header):
+                    if record.get('followup_stage') == 'code_cleanup':
+                        verification = ('target_build' if compile_package_scope(header)
+                                        else 'target_contract_freeze')
+                    elif record.get('followup_stage') == 'target_contract_freeze':
+                        verification = 'target_build'
+                    elif verification == 'target_build':
+                        if source_stage != 'code_cleanup':
+                            verification = 'code_cleanup'
+                        elif not compile_package_scope(header):
+                            verification = 'target_contract_freeze'
                 if record.get('caller_workspace'):
                     # This delta is part of the paused author's candidate.
                     # Its normal host collection validates the complete work;
@@ -337,15 +354,25 @@ class ReviewReworkOrchestration:
                     # whenever it did integrate a candidate above.
                     verification = None
                 if verification and not cancel:
+                    from .memory_admission import HEAVY_STAGES
+                    capacity = (not queue_resources or verification not in HEAVY_STAGES
+                        or self._memory_capacity(snapshot, header, app, 'rework',
+                            requested_stage=verification,
+                            exclude_execution_ids=(record['reviewer_execution_id'], outcome.command_id),
+                            retained_memory_execution_ids=(record['reviewer_execution_id'],)))
+                    if ('queue_deadline_epoch' in record
+                            and self.clock() >= record['queue_deadline_epoch']):
+                        record.update(state='failed', error='Rework queue deadline exhausted before followup dispatch.')
+                        continue
                     record['followup_stage'] = verification
-                    suffix = {'contract_freeze': '.freeze', 'contract_review': '.review'}.get(
+                    suffix = {'contract_freeze': '.freeze', 'contract_review': '.review',
+                              'code_cleanup': '.cleanup', 'target_contract_freeze': '.freeze'}.get(
                         verification, '.verify')
                     followup_id = record['task_id'] + suffix
                     preserved_reports = (
                         {'reviewer_report_paths': REVIEW_REPORT_PATHS['code_review']}
                         if (header.get('definition', {}).get('workflow_version', 0) >= 30
-                            and verification == 'target_build'
-                            and source_stage == 'code_cleanup'
+                            and verification in {'code_cleanup', 'target_contract_freeze', 'target_build'}
                             and record['reviewer_stage'] == 'code_review') else {})
                     followup = self._schedule(snapshot, header, app, verification,
                         task_id=followup_id, dependencies=[record['task_id']], activate=False,
@@ -358,6 +385,11 @@ class ReviewReworkOrchestration:
                                  **preserved_reports},
                         causation_id=outcome.command_id)
                     if any(op['kind'] in {'add_task', 'new_attempt', 'dispatch'} for op in followup):
+                        if not capacity:
+                            followup = [op for op in followup if op['kind'] != 'dispatch']
+                            record.update(waiting_resources=True,
+                                resource_wait=json_copy(app.get('memory_waits', {}).get(
+                                    'rework', {'reason': 'hard_cap_reached'})))
                         operations += followup
                         record['task_id'] = followup_id
                         continue

@@ -11,7 +11,7 @@ from .evidence import atomic_json, read_json, workspace_lock
 from .interrupted_execution import stopped_execution_evidence
 from .kernel_runtime import operation_lock, repository_facts, validate_stage_response
 from .payload_storage import pack_result, unpack_input
-from .watchdog_events import enabled
+from .failure_supervision import recovery_enabled as enabled
 
 
 _CONTROL = ('request_committed', 'command_delivered', 'execution_authority_revoked')

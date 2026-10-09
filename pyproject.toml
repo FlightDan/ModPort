@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "modport"
-version = "1.0.1"
+version = "1.0.2"
 description = "Agent-assisted Forge to NeoForge mod migration with runtime evidence"
 readme = "README.md"
 requires-python = ">=3.10"

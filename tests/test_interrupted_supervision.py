@@ -1,5 +1,6 @@
 """Actual stopped watchdog worker/driver recovery through current SDK control."""
 import json
+from dataclasses import replace
 import os
 from pathlib import Path
 import subprocess
@@ -36,7 +37,7 @@ class InterruptedSupervisor:
             error_code='fixture_diagnosis_failed')
 
 
-def crash_supervisor_driver(root):
+def crash_supervisor_driver(root, watchdog_enabled=True):
     root = Path(root)
     handlers = {'modport.supervisor': InterruptedSupervisor()}
     owner = MigrationOperations(handlers=handlers, isolation_mode='process')
@@ -51,7 +52,7 @@ def crash_supervisor_driver(root):
             'run_dir': str(root), 'request': request.to_dict(), 'definition': definition,
             'registry_revision': runtime.registry_revision, 'prior_findings': [], 'initial_refs': {},
             'rubric_sha256': 'host-provenance', 'started_at': now, 'deadline_epoch': now + 3000,
-            'watchdog_policy': {'enabled': True, 'inactivity_seconds': 600}}
+            'watchdog_policy': {'enabled': watchdog_enabled, 'inactivity_seconds': 600}}
         atomic_json(root / 'run.json', header)
         state = sdk.create_run(header['run_id'], command_id='create', input=header, definition=definition)
         app = owner._new_application()
@@ -73,13 +74,14 @@ def crash_supervisor_driver(root):
 @unittest.skipUnless(os.name == 'posix' and Path('/proc/self/stat').exists(),
                      'exact Linux SDK process-birth observations required')
 class InterruptedSupervisionTests(unittest.TestCase):
-    def fixture(self):
+    def fixture(self, *, watchdog_enabled=True):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         child = subprocess.run([sys.executable, '-c',
             'from tests.test_interrupted_supervision import crash_supervisor_driver; '
-            'import sys; crash_supervisor_driver(sys.argv[1])', str(root)],
+            'import sys; crash_supervisor_driver(sys.argv[1], sys.argv[2] == "True")',
+            str(root), str(watchdog_enabled)],
             cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, timeout=20)
         self.assertEqual(83, child.returncode, child.stdout + child.stderr)
         header = json.loads((root / 'run.json').read_text())
@@ -170,14 +172,75 @@ class InterruptedSupervisionTests(unittest.TestCase):
         self.assertNotIn('watchdog_decision', fresh['outputs'])
         self.assertEqual([task_id], list(state['tasks']))
 
-    def test_wrong_active_episode_and_explicit_watchdog_stop_do_not_cancel(self):
+    def test_paused_watchdog_stopped_diagnosis_uses_current_failure_policy(self):
+        root, header, owner, runtime, sdk = self.fixture(watchdog_enabled=False)
+        self.assertFalse(header['watchdog_policy']['enabled'])
+        self.assertEqual('supervisor_first', header['definition']['failure_supervision_policy']['mode'])
+
+        def read():
+            sdk.sync()
+            return hydrate_run_snapshot(root, sdk.get_run(header['run_id']))
+
+        state = read()
+        app = json_copy(state['application_state'])
+        incident = app['watchdog']['active']
+        episode = app['watchdog']['episodes'][incident]
+        task_id = episode['supervisor_task_id']
+        execution_id = state['tasks'][task_id]['attempts'][-1]['command']['execution_id']
+        wrong = {**episode, 'request': {**episode['request'], 'incident_id': 'stale-incident'}}
+        self.assertEqual([], request_cancellation(owner, state, header, app, sdk, wrong))
+        actions, pending = decide(owner, state, header, app, sdk)
+        self.assertTrue(pending)
+        self.assertEqual([task_id], [row['task_id'] for row in actions if row['kind'] == 'cancel'])
+        proof = episode['supervisor_interruptions'][execution_id]['stopped_execution']
+        self.assertTrue(proof['confirmed'])
+        self.assertEqual(execution_id, proof['execution_id'])
+        self.assertNotIn('decision', episode)
+        sdk.apply_operations(header['run_id'], command_id='paused-mechanical-cancel',
+            expected_revision=state['revision'], operations=actions, application_state=app)
+        self.assertFalse(settle(root, header, sdk, read()))
+        sdk.flush()
+        report = sdk.inspect_cancellation(header['run_id'], execution_id=execution_id)
+        controls = report.executions[0]
+        for name in ('request_committed', 'command_delivered', 'execution_authority_revoked'):
+            self.assertEqual('confirmed', getattr(controls, name).status)
+        with patch.object(sdk, 'inspect_cancellation', return_value=replace(report, truncated=True)):
+            self.assertFalse(settle(root, header, sdk, read()))
+        self.assertFalse((root / 'artifacts/executions' / execution_id / 'receipt.json').exists())
+        state = owner.tick(sdk, header)
+        self.assertEqual('cancelled', state['tasks'][task_id]['attempts'][0]['state'])
+        receipt = json.loads((root / 'artifacts/executions' / execution_id / 'receipt.json').read_text())
+        self.assertEqual('watchdog_diagnosis_interrupted', receipt['response']['error_code'])
+        self.assertNotIn('watchdog_decision', receipt['response']['outputs'])
+        self.assertEqual('unverified', receipt['response']['outputs']['acceptance_status'])
+        note = json.loads((root / 'artifacts/executions' / execution_id / 'interrupted-watchdog-diagnosis.json').read_text())
+        self.assertTrue(note['stopped_execution']['confirmed'])
+        self.assertEqual(execution_id, note['execution_id'])
+        self.assertEqual(1, state['application_state']['agent_assignments'])
+        self.assertEqual([task_id], list(state['tasks']))
+        episode = state['application_state']['watchdog']['episodes'][incident]
+        self.assertNotIn('decision', episode)
+        owner.clock = lambda: episode['retry_at'] + .01
+        state = owner.tick(sdk, header)
+        self.assertEqual(2, len(state['tasks'][task_id]['attempts']))
+        self.assertEqual(2, state['application_state']['agent_assignments'])
+        self.assertEqual(header['deadline_epoch'], state['input']['deadline_epoch'])
+        # The failed mechanical report can authorize only fresh diagnosis.
+        # No product task or repair decision was accepted from partial output.
+        self.assertIsNone(state['tasks'][task_id]['attempts'][-1]['result'])
+        self.assertNotIn('decision', state['application_state']['watchdog']['episodes'][incident])
+        self.assertEqual([task_id], list(state['tasks']))
+        self.assertFalse(state['input']['watchdog_policy']['enabled'])
+
+    def test_wrong_active_episode_and_disabled_recovery_policies_do_not_cancel(self):
         root, header, owner, runtime, sdk = self.fixture()
         state = hydrate_run_snapshot(root, sdk.get_run(header['run_id']))
         app = json_copy(state['application_state'])
         episode = app['watchdog']['episodes'][app['watchdog']['active']]
         wrong = {**episode, 'request': {**episode['request'], 'incident_id': 'another-incident'}}
         self.assertEqual([], request_cancellation(owner, state, header, app, sdk, wrong))
-        stopped = {**header, 'watchdog_policy': {'enabled': False}}
+        stopped = {**header, 'watchdog_policy': {'enabled': False},
+            'definition': {**header['definition'], 'failure_supervision_policy': {'mode': 'disabled'}}}
         self.assertEqual([], request_cancellation(owner, state, stopped, app, sdk, episode))
         self.assertFalse(settle(root, stopped, sdk, state))
         self.assertEqual('recovery_required', runtime.kernel.get(

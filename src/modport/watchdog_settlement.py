@@ -6,7 +6,7 @@ from .contracts import OperationInput, OperationResult, json_copy
 from .evidence import atomic_json, read_json, workspace_lock
 from .kernel_runtime import operation_lock, repository_facts, validate_stage_response
 from .payload_storage import pack_result, unpack_input
-from .watchdog_events import enabled
+from .failure_supervision import recovery_enabled as enabled
 from .watchdog_supervisor import validate_watchdog_decision
 
 

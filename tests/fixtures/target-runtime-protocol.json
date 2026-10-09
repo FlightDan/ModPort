@@ -1,0 +1,319 @@
+{
+  "requirements": {
+    "schema_version": 1,
+    "behaviors": [
+      {
+        "assertions": [
+          {
+            "assertion_id": "hyperbox.capabilities.external_to_internal",
+            "conditions": "A bound exterior box and a Direction-context capability query on world-space face F.",
+            "expected": "The exterior delegates to the interior block at CENTER plus six blocks along originalFace(F), querying that delegate on side originalFace(F). Item, fluid, and energy operations are forwarded when the corresponding registered capability exists on that endpoint."
+          },
+          {
+            "assertion_id": "hyperbox.capabilities.internal_to_external",
+            "conditions": "An aperture in a child dimension whose parent position contains a Hyperbox, queried on side S.",
+            "expected": "The aperture maps opposite(S) through the parent's orientation, selects the adjacent exterior block in that mapped direction, and queries it on the opposite side. Available item, fluid, and energy operations therefore cross outward as well."
+          },
+          {
+            "assertion_id": "hyperbox.capabilities.delegate_semantics",
+            "conditions": "A real endpoint exposes a sided handler.",
+            "expected": "The endpoint handler's side restrictions, accepted quantities, simulation behavior, and actual storage changes are preserved. Hyperbox supplies delegation rather than a separate buffer or independent transfer rate.",
+            "trigger": "Perform supported insert/extract, fill/drain, or receive/extract operations through either interface."
+          },
+          {
+            "assertion_id": "hyperbox.capabilities.unsupported_context",
+            "expected": "The registered provider returns no capability instead of casting the context or crashing.",
+            "trigger": "Query either interface with a null or other non-Direction context."
+          },
+          {
+            "assertion_id": "hyperbox.capabilities.absent_endpoint",
+            "conditions": "Client-side lookup, an unbound exterior, an endpoint without the requested capability, or an aperture with a missing parent level or non-Hyperbox parent block.",
+            "expected": "No delegated capability is returned for that unavailable path."
+          },
+          {
+            "assertion_id": "hyperbox.capabilities.invalidation",
+            "conditions": "A capability was previously requested through the interface.",
+            "expected": "The exterior subscribes to invalidation at its interior delegate position and invalidates the exterior position when notified. The aperture subscribes to invalidation at the parent Hyperbox position and invalidates its own position when notified; these listeners retire after notifying."
+          }
+        ],
+        "behavior_id": "hyperbox.capabilities",
+        "description": "Direction-context block capabilities cross the exterior/interior boundary in both directions.",
+        "source_anchors": [
+          {
+            "path": "src/main/java/net/commoble/hyperbox/Hyperbox.java",
+            "symbol": "registerDelegateCapabilities; genericallyRegisterBlockCap"
+          },
+          {
+            "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlockEntity.java",
+            "symbol": "getCapability"
+          },
+          {
+            "path": "src/main/java/net/commoble/hyperbox/blocks/ApertureBlockEntity.java",
+            "symbol": "getCapability"
+          },
+          {
+            "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlock.java",
+            "symbol": "getPosAdjacentToAperture; getOriginalFace; getCurrentFacing"
+          }
+        ]
+      }
+    ],
+    "uncertainties": []
+  },
+  "contract": {
+    "schema_version": 1,
+    "behaviors": [
+      {
+        "action": [
+          "Perform committed and aborted target transactions in both directions; replace/invalidate endpoints; query unsupported and unavailable contexts."
+        ],
+        "assertion_contracts": [
+          {
+            "assertion_id": "hyperbox.capabilities.external_to_internal",
+            "conditions": "A bound exterior box and a Direction-context capability query on world-space face F.",
+            "source_anchors": [
+              {
+                "path": "src/main/java/net/commoble/hyperbox/Hyperbox.java",
+                "symbol": "registerDelegateCapabilities; genericallyRegisterBlockCap"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlockEntity.java",
+                "symbol": "getCapability"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/ApertureBlockEntity.java",
+                "symbol": "getCapability"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlock.java",
+                "symbol": "getPosAdjacentToAperture; getOriginalFace; getCurrentFacing"
+              }
+            ],
+            "test_ids": [
+              "hyperbox.target.capabilities"
+            ],
+            "text": "The exterior delegates to the interior block at CENTER plus six blocks along originalFace(F), querying that delegate on side originalFace(F). Item, fluid, and energy operations are forwarded when the corresponding registered capability exists on that endpoint."
+          },
+          {
+            "assertion_id": "hyperbox.capabilities.internal_to_external",
+            "conditions": "An aperture in a child dimension whose parent position contains a Hyperbox, queried on side S.",
+            "source_anchors": [
+              {
+                "path": "src/main/java/net/commoble/hyperbox/Hyperbox.java",
+                "symbol": "registerDelegateCapabilities; genericallyRegisterBlockCap"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlockEntity.java",
+                "symbol": "getCapability"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/ApertureBlockEntity.java",
+                "symbol": "getCapability"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlock.java",
+                "symbol": "getPosAdjacentToAperture; getOriginalFace; getCurrentFacing"
+              }
+            ],
+            "test_ids": [
+              "hyperbox.target.capabilities"
+            ],
+            "text": "The aperture maps opposite(S) through the parent's orientation, selects the adjacent exterior block in that mapped direction, and queries it on the opposite side. Available item, fluid, and energy operations therefore cross outward as well."
+          },
+          {
+            "assertion_id": "hyperbox.capabilities.delegate_semantics",
+            "conditions": "A real endpoint exposes a sided handler.",
+            "source_anchors": [
+              {
+                "path": "src/main/java/net/commoble/hyperbox/Hyperbox.java",
+                "symbol": "registerDelegateCapabilities; genericallyRegisterBlockCap"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlockEntity.java",
+                "symbol": "getCapability"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/ApertureBlockEntity.java",
+                "symbol": "getCapability"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlock.java",
+                "symbol": "getPosAdjacentToAperture; getOriginalFace; getCurrentFacing"
+              }
+            ],
+            "test_ids": [
+              "hyperbox.target.capabilities"
+            ],
+            "text": "The endpoint handler's side restrictions, accepted quantities, simulation behavior, and actual storage changes are preserved. Hyperbox supplies delegation rather than a separate buffer or independent transfer rate.",
+            "trigger": "Perform supported insert/extract, fill/drain, or receive/extract operations through either interface."
+          },
+          {
+            "assertion_id": "hyperbox.capabilities.unsupported_context",
+            "source_anchors": [
+              {
+                "path": "src/main/java/net/commoble/hyperbox/Hyperbox.java",
+                "symbol": "registerDelegateCapabilities; genericallyRegisterBlockCap"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlockEntity.java",
+                "symbol": "getCapability"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/ApertureBlockEntity.java",
+                "symbol": "getCapability"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlock.java",
+                "symbol": "getPosAdjacentToAperture; getOriginalFace; getCurrentFacing"
+              }
+            ],
+            "test_ids": [
+              "hyperbox.target.capabilities"
+            ],
+            "text": "The registered provider returns no capability instead of casting the context or crashing.",
+            "trigger": "Query either interface with a null or other non-Direction context."
+          },
+          {
+            "assertion_id": "hyperbox.capabilities.absent_endpoint",
+            "conditions": "Client-side lookup, an unbound exterior, an endpoint without the requested capability, or an aperture with a missing parent level or non-Hyperbox parent block.",
+            "source_anchors": [
+              {
+                "path": "src/main/java/net/commoble/hyperbox/Hyperbox.java",
+                "symbol": "registerDelegateCapabilities; genericallyRegisterBlockCap"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlockEntity.java",
+                "symbol": "getCapability"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/ApertureBlockEntity.java",
+                "symbol": "getCapability"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlock.java",
+                "symbol": "getPosAdjacentToAperture; getOriginalFace; getCurrentFacing"
+              }
+            ],
+            "test_ids": [
+              "hyperbox.target.capabilities",
+              "hyperbox.target.capabilities.client"
+            ],
+            "text": "No delegated capability is returned for that unavailable path."
+          },
+          {
+            "assertion_id": "hyperbox.capabilities.invalidation",
+            "conditions": "A capability was previously requested through the interface.",
+            "source_anchors": [
+              {
+                "path": "src/main/java/net/commoble/hyperbox/Hyperbox.java",
+                "symbol": "registerDelegateCapabilities; genericallyRegisterBlockCap"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlockEntity.java",
+                "symbol": "getCapability"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/ApertureBlockEntity.java",
+                "symbol": "getCapability"
+              },
+              {
+                "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlock.java",
+                "symbol": "getPosAdjacentToAperture; getOriginalFace; getCurrentFacing"
+              }
+            ],
+            "test_ids": [
+              "hyperbox.target.capabilities"
+            ],
+            "text": "The exterior subscribes to invalidation at its interior delegate position and invalidates the exterior position when notified. The aperture subscribes to invalidation at the parent Hyperbox position and invalidates its own position when notified; these listeners retire after notifying."
+          }
+        ],
+        "assertions": [
+          "The exterior delegates to the interior block at CENTER plus six blocks along originalFace(F), querying that delegate on side originalFace(F). Item, fluid, and energy operations are forwarded when the corresponding registered capability exists on that endpoint.",
+          "The aperture maps opposite(S) through the parent's orientation, selects the adjacent exterior block in that mapped direction, and queries it on the opposite side. Available item, fluid, and energy operations therefore cross outward as well.",
+          "The endpoint handler's side restrictions, accepted quantities, simulation behavior, and actual storage changes are preserved. Hyperbox supplies delegation rather than a separate buffer or independent transfer rate.",
+          "The registered provider returns no capability instead of casting the context or crashing.",
+          "No delegated capability is returned for that unavailable path.",
+          "The exterior subscribes to invalidation at its interior delegate position and invalidates the exterior position when notified. The aperture subscribes to invalidation at the parent Hyperbox position and invalidates its own position when notified; these listeners retire after notifying."
+        ],
+        "id": "hyperbox.capabilities",
+        "preconditions": [
+          "Real sided item/fluid/energy endpoints; every face; unsupported contexts; unavailable paths; previously cached capabilities."
+        ],
+        "side": "server",
+        "source_anchors": [
+          {
+            "path": "src/main/java/net/commoble/hyperbox/Hyperbox.java",
+            "symbol": "registerDelegateCapabilities; genericallyRegisterBlockCap"
+          },
+          {
+            "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlockEntity.java",
+            "symbol": "getCapability"
+          },
+          {
+            "path": "src/main/java/net/commoble/hyperbox/blocks/ApertureBlockEntity.java",
+            "symbol": "getCapability"
+          },
+          {
+            "path": "src/main/java/net/commoble/hyperbox/blocks/HyperboxBlock.java",
+            "symbol": "getPosAdjacentToAperture; getOriginalFace; getCurrentFacing"
+          }
+        ],
+        "source_evidence": "Direction-context block capabilities cross the exterior/interior boundary in both directions.",
+        "test_mapping": [
+          "hyperbox.target.capabilities",
+          "hyperbox.target.capabilities.client"
+        ]
+      }
+    ],
+    "baseline_gradle_tasks": [
+      "runGameTestServer",
+      "modportSessions"
+    ],
+    "baseline_evidence_files": [
+      ".modport/evidence/hyperbox.target.capabilities.json",
+      ".modport/evidence/hyperbox.target.capabilities.client.json"
+    ],
+    "test_evidence": {
+      "hyperbox.target.capabilities": {
+        "evidence_kind": "runtime",
+        "executor": "gametest",
+        "path": ".modport/evidence/hyperbox.target.capabilities.json",
+        "result_identity": {
+          "classname": "hyperbox:target_empty",
+          "gradle_task": "runGameTestServer",
+          "kind": "junit_xml",
+          "name": "hyperbox:target/capabilities"
+        },
+        "runtime_operations": [
+          "perform real bidirectional transfer transactions and invalidate endpoints"
+        ],
+        "test_source_files": [
+          ".modport/harness/java/modport/hyperbox/HyperboxTargetCases.java",
+          ".modport/characterization.init.gradle",
+          ".modport/target-sessions/native-reports.gradle"
+        ]
+      },
+      "hyperbox.target.capabilities.client": {
+        "acceptance_gates": [
+          "client_smoke"
+        ],
+        "evidence_kind": "runtime",
+        "executor": "junit",
+        "path": ".modport/evidence/hyperbox.target.capabilities.client.json",
+        "result_identity": {
+          "classname": "modport.hyperbox.SessionSuiteTest",
+          "gradle_task": "modportSessions",
+          "kind": "junit_xml",
+          "name": "capabilities_client"
+        },
+        "runtime_operations": [
+          "query unavailable capability paths on actual client levels"
+        ],
+        "test_source_files": [
+          ".modport/harness/java/modport/hyperbox/ClientSession.java",
+          ".modport/independent-tests/java/modport/hyperbox/SessionSuiteTest.java"
+        ]
+      }
+    }
+  }
+}

@@ -4,7 +4,7 @@
 
 The user prohibits additional SHA-1, SHA-256, checksum and fingerprint checks unless explicitly requested. Do not add such checks in scripts, harnesses or delegated work. Do not compare source_fingerprint, candidate or rubric metadata in the gameplay harness or abort gameplay/evidence writing because the author's contract omits host-owned fields. Copy required provenance from the supplied source commit and rubric; host-owned artifact bookkeeping does not authorize another gate. Remove existing agent-added identity/checksum gates when repairing a harness, preserving its gameplay assertions and historical evidence.
 
-## Current workflow (v43)
+## Current workflow (v45)
 
 New Runs use the latest workflow in the current workspace. Only the single old
 Run explicitly selected and carried by the host is supported for its actual
@@ -43,6 +43,11 @@ Do not claim a speed improvement until real target execution is compared.
 The runtime target contract keeps `behaviors` and `test_evidence` at the JSON
 root after freezing; the host archive wrapper is a separate file. Native
 GameTest XML is bound by the host to `build/test-results/<selected-task>/`.
+Native GameTest report identities use resource locations, including namespaces
+and paths; JUnit identities retain Java class names. Declaration, selection and
+report consumption share this protocol. Harness sources may be Java, Kotlin,
+Groovy or Gradle scripts. Build preflight accepts declared property aliases and
+rejects supplied wrong or conflicting values.
 Reuse host launch, report and session support across mods and target versions;
 keep game API differences in locked-version adapters and mod assertions in cases.
 
@@ -59,7 +64,57 @@ may simplify the merged candidate within its assignment, but must preserve
 behavior, tests, contracts and acceptance checks. A cleanup failure remains a
 diagnostic and does not gate verification. Only an explicit
 `request_rework` starts author work; reviewer-requested rework of `code_cleanup`
-is followed by a fresh `target_build`.
+is followed by a fresh `target_contract_freeze → target_build`. Integrated coder
+rework follows the same cleanup, freeze and build order. Compile/package-only
+Runs retain cleanup and build without a runtime contract freeze. Resource waits
+preserve the planned SDK task, original deadline and assignment charge.
+
+Independent test design consumes the current source-reading contract and its
+plural source anchors. Gap review and delivery consume current preparation,
+inventory, plan and scan evidence. Empty registered gap lists are valid; retain
+unresolved dependencies and incomplete scans as uncertainties. Do not invent
+legacy analysis references or gap IDs to fill an empty list.
+
+## Host-bound watchdog decision handoff (v45)
+
+The model returns only action, reason, instruction, wait_for and stop_category.
+The host binds the incident ID from the exact dispatched request after checking
+that the returned result belongs to that invocation. Consumers validate the
+bound decision against the pending incident; model output never supplies the
+incident identity. Preserve the raw report and precise producer errors. A
+subsequent diagnosis receives current task IDs, remaining budget observations
+and effective repair results alongside the original failure, so completed work
+is visible without rewriting historical evidence or extending the budget.
+Continuation retains current effective producers; the selected historical
+failure stays in feedback and cannot overwrite a later repair or its references.
+
+## Failure supervision independent of liveness monitoring (v44)
+
+New Runs enable the independent watchdog by default. Pausing that service does
+not disable the driver's frozen `failure_supervision_policy: supervisor_first`.
+Current unsuccessful SDK attempts, including business failures returned by a
+successful handler, reach a supervisor before ordinary consumption. This covers
+independent tests, verification and reviewer rework as well as development.
+Host-proposed failed finalization uses the same recovery decision path.
+
+A supervisor may explicitly continue an advisory task failure while retaining
+its original result. Existing required inputs, integration and target acceptance
+remain enforced. Repair/resume requires a concrete supervisor instruction or
+actual eligible rework; do not infer repair from prose alone. Only original
+budget exhaustion, explicit user cancellation, normal completion or a validated
+supervisor diagnosis of unrecoverability ends the Run. Invalid reports cannot
+authorize stopping or another author attempt.
+
+Preserve branch and caller custody, original deadlines, cumulative assignments
+and fresh SDK execution authority. Queue heavy recovery work as the same planned
+task while memory is unavailable; charge it once. Keep unknown cancellation and
+cleanup visible. A continuation archives predecessor supervision controls and
+creates new incident state instead of consuming an old stop or waiting for a
+supervisor absent from the successor.
+
+An explicit current migration restart at `code_cleanup` archives the old target
+results and final cleanup controls before scheduling the fresh target tail.
+The previous gap review settlement cannot override that bound restart point.
 
 ## Explicit continuation and complete integration inputs (v43)
 
@@ -291,7 +346,7 @@ do not discard an otherwise usable independent test snapshot. Explicit
 `request_rework` remains required for reviewer-directed upstream repairs; coder
 dependency revival uses the separate planner decision described above.
 
-These rules describe current v43 agents and the explicitly supported continuation. In
+These rules describe current v45 agents and the explicitly supported continuation. In
 the current route, exact-version scans and mechanical transforms can run
 immediately after source acquisition. A provisional MDK source compile is diagnostic only: it does
 not certify the original custom build or its dependency classpath. Keep omitted inventory issues

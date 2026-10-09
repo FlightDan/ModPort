@@ -362,20 +362,12 @@ def _test_evidence_declarations(
                     raise ValueError(
                         f"runtime evidence {test_id!r} requires an exact JUnit XML result_identity"
                     )
-                task = identity.get('gradle_task')
-                classname = identity.get('classname')
-                method = identity.get('name')
-                if (not isinstance(task, str)
-                        or not re.fullmatch(r':?[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)*', task)
-                        or task.split(':')[-1] in {'help', 'tasks', 'properties', 'runClient', 'runServer'}
-                        or not isinstance(classname, str)
-                        or not re.fullmatch(r'[A-Za-z0-9_.:-]+' if native else r'[A-Za-z_$][A-Za-z0-9_$.]*', classname)
-                        or not isinstance(method, str)
-                        or not re.fullmatch(r'[A-Za-z0-9_.:-]+' if native else r'[A-Za-z_$][A-Za-z0-9_$]*', method)):
-                    raise ValueError(f"runtime evidence {test_id!r} has an unsafe JUnit XML result_identity")
-                if declared_task_paths is not None and ":" + task.lstrip(":") not in declared_task_paths:
-                    raise ValueError(f"runtime evidence {test_id!r} result task is not declared for verification")
-                identity_key = (":" + task.lstrip(":"), classname, method)
+                from .runtime_result_identity import validate_runtime_result_identity
+                try:
+                    identity_key = validate_runtime_result_identity(
+                        identity, native=native, gradle_tasks=declared_task_paths)
+                except ValueError as exc:
+                    raise ValueError(f"runtime evidence {test_id!r}: {exc}") from exc
                 if identity_key in result_identities:
                     raise ValueError("JUnit result_identity values must be unique across test IDs")
                 result_identities.add(identity_key)
@@ -408,7 +400,8 @@ def _runtime_executor_provenance(
     """Hash executable test sources before untrusted build logic is run."""
 
     schema = rubric.get("test_evidence_schema", {})
-    suffixes = set(schema.get("runtime_test_source_suffixes", ()))
+    from .runtime_result_identity import RUNTIME_TEST_SOURCE_SUFFIXES
+    suffixes = set(schema.get("runtime_test_source_suffixes", ())) | RUNTIME_TEST_SOURCE_SUFFIXES
     provenance: dict[str, dict[str, Any]] = {}
     from .retry_policy import is_harness_source
     worktree_root = worktree.resolve()
@@ -5410,7 +5403,11 @@ class AcceptancePreflightHandler:
         build_text = build_file.read_text(encoding="utf-8", errors="replace")
         required_properties = requirements['properties']
         for key, value in required_properties.items():
-            if re.search(rf"(?m)^\s*{re.escape(key)}\s*=\s*{re.escape(value)}\s*$", property_text) is None:
+            aliases = requirements.get('property_aliases', {}).get(key, [key])
+            observed = [match.group(1).strip() for alias in aliases
+                        for match in re.finditer(
+                            rf"(?m)^\s*{re.escape(alias)}\s*=\s*([^\r\n]*)$", property_text)]
+            if not observed or any(actual != value for actual in observed):
                 if business_gates_disabled(command):
                     return _unverified_result(command, status="failed", diagnostics=[f"target {key} does not match locked manifest"],
                         detail="target preflight observations recorded", error_code="target_toolchain_mismatch")

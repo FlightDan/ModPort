@@ -60,6 +60,54 @@ based on the author's claims alone. Keep rejected findings concrete and actionab
 GAP_REVIEW_PROMPT += "\n" + GAP_IDENTITY_SCHEMA + "\n" + REJECTED_FINDINGS_PROMPT
 
 
+SOURCE_READING_GAP_REVIEW_PROMPT = GAP_REVIEW_PROMPT.replace(
+    'Read the authenticated mod_analysis artifact and independently assess EVERY\n'
+    'current gap_id in gap_assessments against the current candidate, frozen contract,\n',
+    'Read authenticated source_preparation, migration inventory and plan, frozen\n'
+    'behavior requirements and target contract. Independently assess EVERY registered\n'
+    'gap_id in host project_research_gaps and gap_obligations against the candidate,\n'
+).replace('later analysis revision', 'later input revision').replace(
+    'the latest analysis artifact', 'the latest input artifacts'
+) + """
+The source-reading workflow does not produce a mod_analysis artifact. Empty host
+gap lists mean no registered rows; they do not establish coverage or acceptance.
+Assess preparation dependency uncertainties and incomplete scans against current
+evidence. Retain unestablished concerns as concrete findings with existing artifact
+references; do not invent gap IDs, closure criteria or resolved statuses.
+Every retained target case and assertion needs actual host-observed runtime
+evidence. Missing, skipped or unexecuted cases remain unverified. Source runtime
+and source harness execution are outside this workflow. Request specific author
+repairs through the available rework tools; prose alone does not dispatch repair.
+"""
+
+
+def _review_inputs(command, root):
+    """Consume the current producer artifacts without requiring a retired stage."""
+    from .target_contract import target_only_workflow
+    if not target_only_workflow(command):
+        ref = command.artifact_refs.get('mod_analysis')
+        if not isinstance(ref, Mapping):
+            raise ValueError('authenticated mod_analysis artifact is missing')
+        analysis = json.loads(verified_path(root, ref).read_text(encoding='utf-8'))
+        return _analysis_gaps(analysis), {}
+    observations = {}
+    fields = {
+        'source_preparation': ('unresolved_dependencies', 'version_evidence'),
+        'migration_inventory': ('diagnostics', 'source_scan_complete', 'coverage'),
+        'migration_plan': ('diagnostics', 'deferred_obligations'),
+        'mod_scan_report': ('scan_complete', 'classification', 'compatibility_verified', 'check_cache'),
+    }
+    for key, names in fields.items():
+        ref = command.artifact_refs.get(key)
+        if not isinstance(ref, Mapping):
+            continue
+        value = json.loads(verified_path(root, ref).read_text(encoding='utf-8'))
+        observations[key] = {name: value[name] for name in names if name in value}
+    # Registered host rows are merged by _validate_report. Source preparation
+    # supplies observations, not legacy gap identities or inferred resolutions.
+    return {}, observations
+
+
 def _strings(value, label, *, empty=False):
     if (not isinstance(value, list) or (not value and not empty)
             or any(not isinstance(item, str) or not item.strip() for item in value)):
@@ -200,6 +248,7 @@ class GapReviewHandler:
         worktree = project_path(root, "worktree")
         review_path = worktree / REPORT_PATH
         business_diagnostics = []
+        input_observations = {}
         try:
             if worktree.resolve() != worktree.absolute() or review_path.parent.resolve() != review_path.parent.absolute():
                 raise ValueError("gap review workspace cannot contain parent symlinks")
@@ -208,11 +257,7 @@ class GapReviewHandler:
             return handlers._result(command, "failed", detail=str(exc), error_code="gap_review_invalid")
         try:
             rubric = handlers._acceptance_rubric_for(command, root)
-            analysis_ref = command.artifact_refs.get("mod_analysis")
-            if not isinstance(analysis_ref, Mapping):
-                raise ValueError("authenticated mod_analysis artifact is missing")
-            analysis = json.loads(verified_path(root, analysis_ref).read_text(encoding="utf-8"))
-            gaps = _analysis_gaps(analysis)
+            gaps, input_observations = _review_inputs(command, root)
         except (OSError, ValueError, TypeError, KeyError) as exc:
             if not business_gates_disabled(command):
                 return handlers._result(command, "failed", detail=str(exc), error_code="gap_review_invalid")
@@ -220,7 +265,10 @@ class GapReviewHandler:
             rubric = acceptance_rubric()
             gaps = {}
             business_diagnostics.append(str(exc))
-        prompt = GAP_REVIEW_PROMPT
+        from .target_contract import target_only_workflow
+        prompt = SOURCE_READING_GAP_REVIEW_PROMPT if target_only_workflow(command) else GAP_REVIEW_PROMPT
+        if input_observations:
+            prompt += '\nHost-observed input evidence (artifact_refs keys; assess, do not assume closure):\n' + json.dumps(input_observations)
         result = handlers.CodexStageHandler(prompt, required_paths=(REPORT_PATH,))(command)
         data = None
         try:
@@ -236,11 +284,9 @@ class GapReviewHandler:
         try:
             from .rework_tools import refresh_review_command
             command = refresh_review_command(command)
-            analysis_ref = command.artifact_refs['mod_analysis']
-            gaps = _analysis_gaps(json.loads(verified_path(root, analysis_ref).read_text()))
+            gaps, input_observations = _review_inputs(command, root)
             # Revalidate evidence after the reviewer has run, including the rubric.
             handlers._acceptance_rubric_for(command, root)
-            verified_path(root, analysis_ref)
             from .agent_reports import review_decision
             report = review_decision(data.decode('utf-8') if data is not None else '')
             report.update(schema_version=1, reviewer_id='gap-review-agent', review_id=command.command_id,
@@ -252,20 +298,22 @@ class GapReviewHandler:
             if not isinstance(snapshot, Mapping):
                 raise ValueError("gap review snapshot is missing")
             verified_path(root, snapshot)
-            from .evidence import atomic_json, file_digest
+            from .evidence import atomic_json
             decision_path = root / 'artifacts' / 'executions' / command.command_id / 'gap-review-decision.json'
             atomic_json(decision_path, report)
-            refs["gap_review"] = {'path': decision_path.relative_to(root).as_posix(), 'sha256': file_digest(decision_path)}
+            refs["gap_review"] = {'path': decision_path.relative_to(root).as_posix()}
             outputs.update(verified_gap_obligations=[_identity(row) for row in command.payload.get("gap_obligations", [])]
                            if report["verdict"] == "approved" else [],
                            verdict=report["verdict"], prior_findings=findings,
+                           review_input_observations=input_observations,
                            artifact_refs=refs)
         except (OSError, ValueError, TypeError, KeyError) as exc:
             if not business_gates_disabled(command):
                 return handlers._result(command, "failed", outputs=dict(result.outputs), detail=str(exc), error_code="gap_review_invalid")
             raw_report = data.decode("utf-8", errors="replace") if data is not None else ""
             return handlers._unverified_result(command, outputs={**result.outputs,
-                "raw_report": raw_report, "observed_verdict": None},
+                "raw_report": raw_report, "observed_verdict": None,
+                "review_input_observations": input_observations},
                 diagnostics=[*business_diagnostics, str(exc)],
                 detail="gap review report retained without schema-gated acceptance")
         if business_gates_disabled(command) and (business_diagnostics or report["verdict"] != "approved"):
@@ -292,10 +340,9 @@ class GapApprovedDeliveryHandler:
         root = handlers._run_root(command)
         try:
             rubric = handlers._acceptance_rubric_for(command, root)
-            analysis_ref = command.artifact_refs["mod_analysis"]
-            analysis = json.loads(verified_path(root, analysis_ref).read_text())
+            gaps, _ = _review_inputs(command, root)
             review = json.loads(verified_path(root, command.artifact_refs["gap_review"]).read_text())
-            _validate_report(review, _analysis_gaps(analysis), command, root, rubric)
+            _validate_report(review, gaps, command, root, rubric)
             if review["verdict"] != "approved":
                 raise ValueError("final gap review is not approved")
         except (OSError, ValueError, KeyError, TypeError) as exc:

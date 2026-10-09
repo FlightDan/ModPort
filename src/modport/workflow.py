@@ -4,7 +4,7 @@ from .contracts import FORMAT_VERSION
 from .evidence import digest
 from .models import MigrationRequest
 
-WORKFLOW_VERSION = 43
+WORKFLOW_VERSION = 45
 DEFAULT_AGENT_MODEL = "gpt-6-luna"
 DEFAULT_REASONING_EFFORT = "max"
 PLANNER_MODEL = "gpt-6.1-sol"
@@ -576,6 +576,12 @@ class WorkflowDefinition:
                 'actual_conflict_repair': 'coder',
                 'preserve_executed_history': True,
                 'frozen_head_gate': False,
+            }
+        if self.version >= 44:
+            result['failure_supervision_policy'] = {
+                'mode': 'supervisor_first',
+                'trigger': 'failed_execution_or_business_result_or_run_finish',
+                'independent_of_liveness_watchdog': True,
             }
         return result
 

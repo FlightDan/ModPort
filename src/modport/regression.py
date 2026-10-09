@@ -10,27 +10,35 @@ from .business_policy import business_gates_disabled
 _TERMINAL = frozenset({'succeeded', 'failed', 'cancelled', 'timed_out', 'dead'})
 
 
+def frozen_contract(lock):
+    """Read the host's source-reading contract without legacy anchor coercion."""
+    contract = lock['contract']
+    if lock.get('verification_basis') == 'source_reading':
+        return contract
+    return CharacterizationContract.from_mapping(contract).to_dict()
+
+
 def frozen_static_behavior_ids(lock):
     """Only frozen, exclusively static-client mappings qualify as static coverage."""
-    contract = CharacterizationContract.from_mapping(lock['contract'])
+    contract = frozen_contract(lock)
     declarations = lock.get('test_evidence', {})
     result = set()
-    for entry in contract.entries:
-        if entry.side != 'client' or not entry.test_mapping:
+    for entry in contract['behaviors']:
+        if entry.get('side') != 'client' or not entry.get('test_mapping'):
             continue
-        records = [declarations.get(identifier, {}) for identifier in entry.test_mapping]
+        records = [declarations.get(identifier, {}) for identifier in entry['test_mapping']]
         if all(record.get('evidence_kind') == 'static_client'
                and isinstance(record.get('static_reason'), str) and record['static_reason'].strip()
                and 'client_smoke' in record.get('acceptance_gates', []) for record in records):
-            result.add(entry.entry_id)
+            result.add(entry['id'])
     return result
 
 
 def partition_scopes(root, refs, obligations, limit, *, separate_static=False):
     """Partition all frozen behavior IDs, keeping every verification obligation."""
     lock = read_json(verified_path(root, refs['functional_contract_lock']))
-    contract = CharacterizationContract.from_mapping(lock['contract'])
-    identities = sorted(entry.entry_id for entry in contract.entries)
+    contract = frozen_contract(lock)
+    identities = sorted(entry['id'] for entry in contract['behaviors'])
     if not identities:
         raise ValueError('scoped regression requires frozen behaviors')
     static = frozen_static_behavior_ids(lock) if separate_static else set()

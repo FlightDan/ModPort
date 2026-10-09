@@ -1978,6 +1978,13 @@ class MigrationOperations(DownstreamGateOrchestration, ReviewReworkOrchestration
                 snapshot, header, app, stage, resume.get('command_id'), result)
             if integration is not None:
                 return integration
+            if resume.get('explicit_target_restart') is True:
+                restart = app.get('continuation_feedback', {}).get('migration_target_restart', {})
+                if (resume.get('next_stage') != 'code_cleanup'
+                        or restart.get('start_stage') != 'code_cleanup'):
+                    raise ValueError('migration target restart differs from its continuation evidence')
+                return self._schedule(snapshot, header, app, 'code_cleanup',
+                    dependencies=[], causation_id=resume.get('command_id'))
             if (required_behavior_policy(header) and source_reading_policy(header)
                     and resume.get("required_target_restart") is True):
                 restart = app.get("continuation_feedback", {}).get("target_restart", {})

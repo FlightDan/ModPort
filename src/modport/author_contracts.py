@@ -384,13 +384,15 @@ def target_build_requirements(manifest: Any) -> dict[str, Any]:
     return {'build_file': 'build.gradle', 'properties_file': 'gradle.properties',
             'properties': {'minecraft_version': manifest.minecraft_version or manifest.request.target_minecraft,
                            'neo_version': manifest.neoforge_version},
+            'property_aliases': {'minecraft_version': ['minecraft_version', 'mc_version'],
+                                 'neo_version': ['neo_version', 'neoforge_version']},
             'java_version': str(manifest.java_version)}
 
 
 def target_build_prompt(manifest: Any) -> str:
     requirements = target_build_requirements(manifest)
     return ('\nTarget build contract: ' + json.dumps(requirements, ensure_ascii=False)
-            + '. Supply these two files at the project root. In gradle.properties use explicit key=value lines for each locked property; '
+            + '. Supply these two files at the project root. In gradle.properties use explicit key=value lines for each locked property or a listed alias; '
             'in build.gradle declare the Java toolchain with JavaLanguageVersion.of('
             + requirements['java_version'] + '). Whitespace around assignments and Java call punctuation is allowed. '
             'Property indirection for this Java expression or a Kotlin-only build.gradle.kts layout does not satisfy this gate.')

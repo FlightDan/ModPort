@@ -462,7 +462,7 @@ def report_contract(command: Any, required_paths: Sequence[str] = ()) -> dict[st
     if stage == 'supervisor' and 'watchdog_incident' in getattr(command, 'payload', {}):
         from .watchdog_supervisor import watchdog_supervisor_schema
         return {'schema': watchdog_supervisor_schema(), 'output_path': None,
-                'instructions': 'Return only the host-incident-bound watchdog decision JSON document.'}
+                'instructions': 'Return only the five watchdog action fields in the schema; the host supplies incident identity.'}
 
     if stage == 'supervisor' and 'progress_supervision' in getattr(command, 'payload', {}):
         from .progress_supervisor import progress_supervisor_schema

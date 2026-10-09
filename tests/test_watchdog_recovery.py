@@ -88,7 +88,9 @@ class WatchdogRecoveryTests(unittest.TestCase):
         self.assertEqual(app["agent_assignments"], original["application_state"]["agent_assignments"] + 1)
         self.assertEqual(app["rounds"], original["application_state"]["rounds"])
         self.assertEqual(app["repair_generation"], 3)
-        self.assertEqual(app["watchdog"]["resume_controls"], {
+        episode = app['watchdog']['episodes'][app['watchdog']['active']]
+        self.assertNotIn('resume_controls', app['watchdog'])
+        self.assertEqual(episode["resume_controls"], {
             "active_stage": "source", "active_group": {"generation": 4, "retained_control": "original"}})
         self.assertNotIn("recovery_deadline_epoch", app)
         self.assertNotIn("recovery_budget_override", app)

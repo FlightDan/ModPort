@@ -42,6 +42,10 @@ class WatchdogSupervisorTests(unittest.TestCase):
             'instruction': 'Replace the obsolete invocation in the supplied isolated copy, then compile.',
             'wait_for': [], 'stop_category': None}
 
+    @property
+    def report(self):
+        return {key: value for key, value in self.decision.items() if key != 'incident_id'}
+
     def handler(self, text, *, status='completed', edit=None):
         def create(prompt):
             self.assertIn(json.dumps(self.request, sort_keys=True), prompt)
@@ -66,20 +70,20 @@ class WatchdogSupervisorTests(unittest.TestCase):
         from modport.report_schemas import report_contract
         contract = report_contract(self.command)
         self.assertEqual(watchdog_supervisor_schema(), contract['schema'])
-        self.assertEqual(set(self.decision), set(contract['schema']['required']))
+        self.assertEqual(set(self.report), set(contract['schema']['required']))
         self.assertIsNone(contract['output_path'])
         self.assertIn('request_rework', WATCHDOG_SUPERVISOR_PROMPT)
         self.assertIn('conclusively unrecoverable', WATCHDOG_SUPERVISOR_PROMPT)
-        result = invoke_watchdog_supervisor(self.command, self.handler(json.dumps(self.decision)))
+        result = invoke_watchdog_supervisor(self.command, self.handler(json.dumps(self.report)))
         self.assertEqual(self.decision, result.outputs['watchdog_decision'])
         self.assertEqual(self.request, json.loads((self.root / result.outputs['watchdog_supervision_input']).read_text())['watchdog_incident'])
 
     def test_invalid_and_failed_reports_have_no_authority_and_keep_raw_evidence(self):
         cases = [('not JSON', 'completed'),
-            (json.dumps({**self.decision, 'incident_id': 'another'}), 'completed'),
-            (json.dumps({**self.decision, 'run_id': 'invented'}), 'completed'),
-            (json.dumps({**self.decision, 'instruction': None}), 'completed'),
-            (json.dumps(self.decision), 'failed')]
+            (json.dumps({**self.report, 'incident_id': 'another'}), 'completed'),
+            (json.dumps({**self.report, 'run_id': 'invented'}), 'completed'),
+            (json.dumps({**self.report, 'instruction': None}), 'completed'),
+            (json.dumps(self.report), 'failed')]
         for text, status in cases:
             with self.subTest(text=text, status=status):
                 result = invoke_watchdog_supervisor(self.command, self.handler(text, status=status))
@@ -131,7 +135,7 @@ class WatchdogSupervisorTests(unittest.TestCase):
         def edit(prepared):
             path = self.root / prepared.options['workspace'] / 'source/task-0/src/A.java'
             path.write_text('class A { current(); }\n')
-        result = invoke_watchdog_supervisor(command, self.handler(json.dumps(self.decision), edit=edit))
+        result = invoke_watchdog_supervisor(command, self.handler(json.dumps(self.report), edit=edit))
         self.assertEqual(self.decision, result.outputs['watchdog_decision'])
         self.assertTrue(result.outputs['diagnostic_repairs'])
         self.assertEqual('api', result.outputs['diagnostic_repairs'][0]['metadata']['task_id'])
@@ -189,7 +193,7 @@ class WatchdogSupervisorTests(unittest.TestCase):
             self.assertIn('unchanged', task['task'])
             result = subprocess.CompletedProcess(['opencode'], 0, json.dumps({
                 'type': 'item.completed', 'item': {'type': 'agent_message',
-                                                  'text': json.dumps(self.decision)}}))
+                                                  'text': json.dumps(self.report)}}))
             result.dialogue_metadata = {}
             return result
         compressor = SimpleNamespace(compress=lambda text, **kwargs: SimpleNamespace(
@@ -223,7 +227,7 @@ class WatchdogSupervisorTests(unittest.TestCase):
         self.assertEqual(1, len(calls))
         self.assertEqual(5, result.outputs['agent_assignment'])
         self.assertEqual(self.request, self.command.payload['watchdog_incident'])
-        self.assertEqual(self.decision,
+        self.assertEqual(self.report,
             json.loads((self.root / result.outputs['watchdog_supervisor_raw_report']).read_text()))
 
 

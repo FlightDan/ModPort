@@ -20,7 +20,6 @@ from typing import Mapping
 from xml.etree import ElementTree
 
 from . import handlers
-from .characterization import CharacterizationContract
 from .contracts import OperationInput, OperationResult
 from .evidence import digest, file_digest, verified_path
 from .manifest import canonical_json
@@ -138,18 +137,20 @@ def _contract(command, root):
     bound_rubric = lock.get('acceptance_rubric', {})
     if any(bound_rubric.get(key) != rubric[key] for key in ('rubric_id', 'rubric_version')):
         raise ValueError('frozen functional contract rubric mismatch')
-    contract = CharacterizationContract.from_mapping(lock.get('contract', {}))
-    ids = {entry.entry_id for entry in contract.entries}
+    from .regression import frozen_contract, frozen_static_behavior_ids
+    contract = frozen_contract(lock)
+    ids = {entry['id'] for entry in contract['behaviors']}
     if not ids:
         raise ValueError('frozen functional contract has no behaviors')
-    from .regression import frozen_static_behavior_ids
     static_ids = frozen_static_behavior_ids(lock)
     if not static_ids <= ids:
         raise ValueError('frozen static classification references unknown contract behavior IDs')
-    return ids, {'contract_id': contract.contract_id,
-                 'contract_schema_version': contract.schema_version,
-                 'rubric_id': rubric['rubric_id'],
-                 'rubric_version': rubric['rubric_version']}, static_ids
+    bindings = {'rubric_id': rubric['rubric_id'], 'rubric_version': rubric['rubric_version']}
+    for source_key, key in (('contract_id', 'contract_id'),
+                            ('schema_version', 'contract_schema_version')):
+        if source_key in contract:
+            bindings[key] = contract[source_key]
+    return ids, bindings, static_ids
 
 
 def _strings(value, name):

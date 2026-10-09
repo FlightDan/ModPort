@@ -8,6 +8,9 @@ import re
 
 from .contracts import OperationResult
 from .evidence import atomic_json, verified_path
+from .runtime_result_identity import (
+    RUNTIME_TEST_SOURCE_SUFFIXES, validate_runtime_result_identity,
+)
 
 
 def target_only_workflow(value):
@@ -182,27 +185,24 @@ def validate_target_contract(requirements, candidate, *, workspace=None):
         if (not isinstance(operations, list) or not operations
                 or any(not isinstance(value, str) or not value.strip() for value in operations)):
             raise ValueError(test_id + ': concrete runtime operations are required')
-        identity = declaration.get('result_identity')
-        if (not isinstance(identity, Mapping)
-                or set(identity) != {'kind', 'gradle_task', 'classname', 'name'}
-                or identity.get('kind') != 'junit_xml'):
-            raise ValueError(test_id + ': exact target XML result identity is required')
-        identity_task = identity.get('gradle_task')
-        if not isinstance(identity_task, str) or ':' + identity_task.lstrip(':') not in {
-                ':' + task.lstrip(':') for task in tasks}:
-            raise ValueError(test_id + ': XML result task is not declared')
-        for key in ('classname', 'name'):
-            if not isinstance(identity.get(key), str) or not identity[key].strip():
-                raise ValueError(test_id + ': XML result ' + key + ' is missing')
-        identity_key = (':' + identity_task.lstrip(':'), identity['classname'], identity['name'])
+        try:
+            identity_key = validate_runtime_result_identity(
+                declaration.get('result_identity'),
+                native=declaration['executor'] == 'gametest', gradle_tasks=tasks,
+            )
+        except ValueError as exc:
+            raise ValueError(test_id + ': ' + str(exc)) from exc
         if identity_key in identities:
             raise ValueError('target XML result identities repeat')
         identities.add(identity_key)
         sources = declaration.get('test_source_files')
         if not isinstance(sources, list) or not sources or len(sources) != len(set(sources)):
             raise ValueError(test_id + ': target test source files are missing')
+        from .retry_policy import is_harness_source
         for source in sources:
-            _contained_path(source, '.modport/', '.java')
+            _contained_path(source, '.modport/')
+            if PurePosixPath(source).suffix not in RUNTIME_TEST_SOURCE_SUFFIXES or not is_harness_source(source):
+                raise ValueError(test_id + ': target test source must be executable harness source')
             if workspace is not None:
                 verified_path(Path(workspace), {'path': source})
     files = candidate.get('baseline_evidence_files')

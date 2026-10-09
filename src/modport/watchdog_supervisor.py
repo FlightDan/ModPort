@@ -40,11 +40,20 @@ a known task or an explicitly explained external prerequisite. Stopping one stuc
 execution does not abandon the Run: for repair_resume the host cancels and settles
 that exact attempt before a fresh attempt under unchanged deadline and usage.
 Choose stop only for budget exhaustion or a conclusively unrecoverable cause.
+An unsuccessful verification, missing report or invalid interface is unfinished
+work, not proof that recovery is impossible. Diagnose its producer and consumer
+and use the available repair or prerequisite-wait route. The host also sends
+failed tasks and proposed Run failures here when the independent liveness
+watchdog is paused; the original deadline and cumulative usage still apply.
+For a settled task_failure, continue may explicitly retain an advisory failure
+and let the existing consumer advance. It never changes that result to passed
+or waives required inputs, integration, target execution or final acceptance.
 Inconclusive observations do not establish unrecoverability. The host confirms
 budget exhaustion and rejects stale decisions. Neither action extends any budget.
 
-Return one JSON object with exactly incident_id, action, reason, instruction,
-wait_for and stop_category. Copy incident_id from the host request. action is
+Return one JSON object with exactly action, reason, instruction, wait_for and
+stop_category. The host binds your response to its incident and execution; do
+not return incident_id or execution identity. action is
 continue, repair_resume, wait or stop. reason explains causal evidence. instruction
 is concrete and nonempty for repair_resume; when wait_for is empty for wait it
 must explicitly describe the external prerequisite. Otherwise instruction may be
@@ -83,7 +92,6 @@ def watchdog_incident_request(value: Any) -> dict[str, Any]:
 
 def watchdog_supervisor_schema() -> dict[str, Any]:
     properties = {
-        'incident_id': {'type': 'string', 'minLength': 1, 'maxLength': 512},
         'action': {'type': 'string', 'enum': ['continue', 'repair_resume', 'wait', 'stop']},
         'reason': {'type': 'string', 'minLength': 1, 'maxLength': 16_000},
         'instruction': {'type': ['string', 'null'], 'minLength': 1, 'maxLength': 32_000},
@@ -99,7 +107,8 @@ def watchdog_supervisor_schema() -> dict[str, Any]:
 
 def validate_watchdog_decision(document: Any, request: Mapping[str, Any]) -> dict[str, Any]:
     expected = watchdog_incident_request(request)
-    if not isinstance(document, Mapping) or set(document) != set(watchdog_supervisor_schema()['required']):
+    fields = set(watchdog_supervisor_schema()['required']) | {'incident_id'}
+    if not isinstance(document, Mapping) or set(document) != fields:
         raise ValueError('watchdog decision must contain exactly the six protocol fields')
     if document['incident_id'] != expected['incident_id']:
         raise ValueError('watchdog decision incident_id does not match the host request')
@@ -127,6 +136,14 @@ def validate_watchdog_decision(document: Any, request: Mapping[str, Any]) -> dic
     elif document['stop_category'] is not None:
         raise ValueError('watchdog stop_category must be null unless stopping')
     return json.loads(json.dumps(dict(document), ensure_ascii=False, allow_nan=False))
+
+
+def bind_watchdog_report(document: Any, request: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind model action fields to the request of this exact host invocation."""
+    if not isinstance(document, Mapping) or set(document) != set(watchdog_supervisor_schema()['required']):
+        raise ValueError('watchdog report must contain exactly action, reason, instruction, wait_for and stop_category')
+    expected = watchdog_incident_request(request)
+    return validate_watchdog_decision({**document, 'incident_id': expected['incident_id']}, expected)
 
 
 def _raw_report(root: Path, outputs: Mapping[str, Any]) -> tuple[str, bool]:
@@ -205,7 +222,8 @@ def invoke_watchdog_supervisor(
         if truncated:
             raise ValueError('watchdog supervisor report exceeds 1 MiB; original log retained')
         if result.status == 'completed':
-            outputs['watchdog_decision'] = validate_watchdog_decision(json.loads(raw), request)
+            result.validate_for(command)
+            outputs['watchdog_decision'] = bind_watchdog_report(json.loads(raw), request)
         else:
             diagnostics.append('watchdog supervisor did not complete; decision ignored')
     except (OSError, ValueError, TypeError, KeyError) as error:

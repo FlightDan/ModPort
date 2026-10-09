@@ -27,9 +27,9 @@ def _enabled(header, app):
     return enabled(header, app)
 
 
-def _begin(owner, snapshot, header, app, incident):
+def _begin(owner, snapshot, header, app, incident, *, resume_controls=None):
     from .watchdog_routing import begin
-    return begin(owner, snapshot, header, app, incident)
+    return begin(owner, snapshot, header, app, incident, resume_controls=resume_controls)
 
 
 def _status(state, status, reason, *, recovery=None, **details):
@@ -190,15 +190,18 @@ def recover(owner: Any, run_dir: str | Path, run_id: str) -> dict[str, Any]:
             task_id, execution_id = _target(state, app)
             generation = int(state.get("generation", 0)) + 1
             watchdog = app.setdefault("watchdog", {})
-            watchdog.setdefault("resume_controls", {
+            controls = {
                 "active_stage": json_copy(app.get("active_stage")),
                 "active_group": json_copy(app.get("active_group") or app.get('failed_development_group')),
-            })
+            }
             watchdog["recovered_failure"] = {"generation": state.get("generation", 0),
                 "revision": state["revision"], "reason": app.get("terminal_reason") or app.get("stop_reason")}
             prior_episode = watchdog.get("episodes", {}).get(watchdog.get("active"))
             if isinstance(prior_episode, dict):
+                if controls['active_stage'] is None and controls['active_group'] is None:
+                    controls = json_copy(prior_episode.get('resume_controls') or controls)
                 prior_episode["status"] = "interrupted_by_terminal_failure"
+            watchdog.pop('resume_controls', None)
             watchdog["active"] = None
             reason = app.get("terminal_reason") or app.get("stop_reason") or "terminal Run failure"
             incident = {"incident_id": "recovery.g" + str(generation), "kind": "run_failed",
@@ -210,7 +213,7 @@ def recover(owner: Any, run_dir: str | Path, run_id: str) -> dict[str, Any]:
             app["terminal_reason"] = None
             execution_header = json_copy(header)
             execution_header["registry_revision"] = runtime.registry_revision
-            operations = _begin(owner, state, execution_header, app, incident)
+            operations = _begin(owner, state, execution_header, app, incident, resume_controls=controls)
             if not any(operation.get("kind") == "dispatch" for operation in operations):
                 return _status(state, "blocked", "supervisor_not_scheduled")
             deployment = {"registry_revision": runtime.registry_revision,

@@ -11,11 +11,11 @@ from xml.etree import ElementTree
 import json
 import re
 
+from .runtime_result_identity import validate_runtime_result_identity
+
 
 _TEST_ID = re.compile(r"[A-Za-z0-9_.:-]+\Z")
 _GRADLE_TASK = re.compile(r":?[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)*\Z")
-_CLASSNAME = re.compile(r"[A-Za-z_$][A-Za-z0-9_$.]*\Z")
-_METHOD_NAME = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*\Z")
 _FORBIDDEN_TASK_NAMES = {"help", "tasks", "properties", "runClient", "runServer"}
 _MAX_JUNIT_XML_BYTES = 16 * 1024 * 1024
 GAMETEST_REPORT_FILENAME = "TEST-modport-gametest.xml"
@@ -125,20 +125,14 @@ def _selected_identities(
         native = workflow_version >= 34 and declaration.get('executor') == 'gametest'
         if declaration.get("evidence_kind") != "runtime" or (declaration.get("executor") != "junit" and not native):
             raise ValueError(f"selected test {test_id!r} does not use a runtime JUnit executor")
-        identity = declaration.get("result_identity")
-        expected_keys = {"kind", "gradle_task", "classname", "name"}
-        if (not isinstance(identity, Mapping) or set(identity) != expected_keys
-                or identity.get("kind") != "junit_xml"):
-            raise ValueError(f"selected test {test_id!r} has no exact JUnit XML result identity")
-        task = _canonical_gradle_task(identity.get("gradle_task"), test_id=test_id)
-        classname, method = identity.get("classname"), identity.get("name")
-        class_pattern = _TEST_ID if native else _CLASSNAME
-        method_pattern = _TEST_ID if native else _METHOD_NAME
-        if not isinstance(classname, str) or not class_pattern.fullmatch(classname):
-            raise ValueError(f"selected test {test_id!r} has an invalid JUnit classname")
-        if not isinstance(method, str) or not method_pattern.fullmatch(method):
-            raise ValueError(f"selected test {test_id!r} has an invalid JUnit method name")
-        identity_key = (task, classname, method)
+        try:
+            identity_key = validate_runtime_result_identity(
+                declaration.get('result_identity'), native=native,
+                gradle_tasks=contract.get('baseline_gradle_tasks'),
+            )
+        except ValueError as exc:
+            raise ValueError(f'selected test {test_id!r}: {exc}') from exc
+        task, classname, method = identity_key
         if identity_key in seen_identities:
             raise ValueError("selected test IDs reuse a JUnit result identity")
         seen_identities.add(identity_key)
